@@ -1,0 +1,28 @@
+# Review and merge into backend/gateway-service application.yml.
+# Routes only: JWT/WS handshake and service isolation still need D/E agreement.
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: cloud-notification-list
+          uri: ${CLOUD_SERVICE_URL:http://host.docker.internal:8081}
+          predicates:
+            - Path=/api/notifications
+            - Method=GET
+        - id: cloud-notification-read
+          uri: ${CLOUD_SERVICE_URL:http://host.docker.internal:8081}
+          predicates:
+            - Path=/api/notifications/*/read
+            - Method=PATCH
+        - id: notification-service
+          uri: ${NOTIFICATION_SERVICE_URL:http://notification-service:8082}
+          predicates:
+            - Path=/api/notifications/**
+        - id: cloud-service
+          uri: ${CLOUD_SERVICE_URL:http://host.docker.internal:8081}
+          predicates:
+            - Path=/api/devices/**,/api/sensors/**,/api/edge/**,/api/commands/**,/api/forecast,/api/decisions/**,/api/settings/**
+        - id: cloud-websocket
+          uri: ${CLOUD_WS_URL:ws://host.docker.internal:8081}
+          predicates:
+            - Path=/ws

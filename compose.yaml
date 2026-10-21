@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: roomait
+      POSTGRES_USER: roomait
+      POSTGRES_PASSWORD: local-development-only
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - roomait-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U roomait -d roomait']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - '127.0.0.1:1883:1883'
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+volumes:
+  roomait-db:

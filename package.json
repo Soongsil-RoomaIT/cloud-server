@@ -13,15 +13,33 @@
   "license": "ISC",
   "author": "",
   "type": "commonjs",
-  "main": "index.js",
+  "main": "src/server.js",
   "directories": {
     "doc": "docs",
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/*.test.js",
+    "db:init": "node scripts/init-db.js",
+    "frontend:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-frontend.ps1"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.8",
+    "express": "^5.2.1",
+    "jose": "^6.2.13",
+    "mqtt": "^5.16.1",
+    "pg": "^8.23.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "aedes": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

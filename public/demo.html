@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RoomaIT · 서버 실습</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f3f5f7;color:#162735;margin:0}main{max-width:1080px;margin:40px auto;padding:0 24px}header{display:flex;justify-content:space-between;align-items:center;gap:20px}h1{font-size:30px;margin:12px 0}h2{font-size:18px}.tag{color:#195f54;background:#dcf2e9;border-radius:20px;padding:8px 14px}section{background:white;border:1px solid #dde3e8;border-radius:14px;padding:22px;margin:20px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}.metric{background:#f5f8fa;padding:18px;border-radius:10px}.metric strong{display:block;font-size:26px;margin-top:10px}button,select,input{font:inherit;border:1px solid #c9d3da;border-radius:7px;padding:10px 14px;margin:4px}button{background:#145f55;color:white;cursor:pointer}button.secondary{background:white;color:#145f55}button:disabled{opacity:.5;cursor:wait}p{line-height:1.65;color:#526471}a{color:#145f55}#status{min-height:24px}#events{max-height:260px;overflow:auto;font:13px/1.6 ui-monospace,monospace;white-space:pre-wrap}label{display:inline-block}#decisions>div{padding:12px 0;border-bottom:1px solid #ddd}
+</style></head>
+<body><main><header><div><div class="tag">가상 장비 · 실제 기기는 움직이지 않습니다</div><h1>서버 실습 콘솔</h1></div><a href="/">팀 대시보드 열기 →</a></header>
+<p>5초마다 가상 센서가 갱신됩니다. 장치 제어와 연결 복구를 시험하고, 프론트엔드와 같은 API 응답을 확인하세요. 데모 기록과 설정은 서버를 재시작하면 초기화됩니다.</p>
+<p id="status" role="status" aria-live="polite">연결 중…</p>
+<section><h2>실내 환경</h2><div id="sensors" class="grid"></div><p id="measured"></p></section>
+<section><h2>기기 제어</h2><div id="devices" class="grid"></div></section>
+<section><h2>자동 제어</h2><label><input type="checkbox" id="enabled">자동화 사용</label><select id="mode" aria-label="자동화 모드"><option value="APPROVAL">승인 후 실행</option><option value="AUTO">완전 자동</option></select><button id="save">설정 저장</button><p>습도 65% 이상이면 제습기를 켜고, 55% 이하이면 끕니다. 원격 조작 후 10분간 해당 기기의 자동화를 보류합니다.</p><div id="decisions"></div></section>
+<section><h2>상황 재현</h2><button id="humid">습도 75% 입력</button><button id="disconnect" class="secondary">엣지 연결 끊기</button><button id="recover" class="secondary">엣지 복구</button><p>센서 입력은 다음 5초 주기 측정으로 바뀝니다. 추천을 승인하려면 입력 직후 승인하세요.</p></section>
+<section><h2>실시간 이벤트</h2><div id="events" aria-live="polite"></div></section>
+</main><script>
+let settings, offlineSince;
+const $ = id => document.getElementById(id);
+async function api(path, method='GET', body) {
+  const res = await fetch('/api'+path, { method, headers: body ? {'Content-Type':'application/json'} : {}, body: body ? JSON.stringify(body) : undefined });
+  if (res.status===204) return;
+  const data = await res.json(); if (!res.ok) throw new Error(data.message); return data;
+}
+function status(message) { $('status').textContent=message; }
+function log(message) { $('events').textContent=(new Date().toLocaleTimeString()+' '+message+'\n'+$('events').textContent).slice(0,10000); }
+function button(label, fn) { const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{b.disabled=true;try{await fn();}catch(e){status(e.message);}finally{b.disabled=false;}};return b; }
+function sensors(r) {
+  $('sensors').replaceChildren();
+  for(const [key,label,unit] of [['temperature','온도','°C'],['humidity','습도','%'],['co2','CO₂','ppm'],['pm25','초미세먼지','µg/m³'],['pm10','미세먼지','µg/m³']]){
+    const div=document.createElement('div');div.className='metric';div.textContent=label;const n=document.createElement('strong');n.textContent=r[key].toFixed(1)+' '+unit;div.append(n);$('sensors').append(div);
+  }$('measured').textContent='측정 시각 '+new Date(r.measuredAt).toLocaleString();
+}
+async function devices() {
+  const rows=await api('/devices');$('devices').replaceChildren();
+  for(const d of rows){const div=document.createElement('div');div.className='metric';const text=document.createElement('p');text.textContent=d.name+' · '+d.state;div.append(text);
+    for(const a of (['WINDOW','FRONT_DOOR'].includes(d.type)?['OPEN','CLOSE']:['ON','OFF']))div.append(button(a,async()=>{const c=await api('/devices/'+d.id+'/commands','POST',{action:a});status('명령 접수 · 실행 확인 대기');log('command '+c.commandId);}));$('devices').append(div);}
+}
+async function decisions() {
+  const data=await api('/forecast');$('decisions').replaceChildren();
+  for(const d of data.decisions.filter(d=>d.status==='PROPOSED')){const div=document.createElement('div');const text=document.createElement('span');text.textContent=d.deviceId+' '+d.action+' · '+d.reasons.map(r=>r.factor+' '+r.value).join(', ');div.append(text);for(const [label,action] of [['승인','approve'],['거절','reject']])div.append(button(label,async()=>{await api('/decisions/'+d.id+'/'+action,'POST');await decisions();}));$('decisions').append(div);}
+}
+async function initialize() {
+  sensors(await api('/sensors/latest'));await devices();settings=await api('/settings/automation');$('enabled').checked=settings.enabled;$('mode').value=settings.mode;await decisions();
+}
+function connect() {
+ const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='sensor.update')sensors(m.payload);if(m.type==='device.state')devices().catch(e=>status(e.message));if(m.type==='edge.status')status(m.payload.online?'엣지 연결됨':'엣지 연결 끊김');if(m.type!=='heartbeat')log(m.type+' '+JSON.stringify(m.payload));if(m.type==='command.ack')status(m.payload.reason);if(['decision.proposed','sensor.update','command.ack'].includes(m.type))decisions().catch(e=>status(e.message));};
+ ws.onopen=()=>initialize().catch(e=>status(e.message));ws.onclose=()=>{status('서버 연결 끊김 · 재연결 중');setTimeout(connect,2000);};
+}
+$('save').onclick=async()=>{try{settings=await api('/settings/automation','PUT',{...settings,enabled:$('enabled').checked,mode:$('mode').value});status('자동화 설정 저장 완료');await decisions();}catch(e){status(e.message);}};
+$('humid').onclick=async()=>{try{await api('/demo/sensors','POST',{measuredAt:new Date().toISOString(),temperature:24,humidity:75,co2:900,pm25:18,pm10:30});}catch(e){status(e.message);}};
+$('disconnect').onclick=async()=>{try{offlineSince=new Date().toISOString();await api('/demo/status','POST',{online:false,offlineMode:true});}catch(e){status(e.message);}};
+$('recover').onclick=async()=>{try{if(offlineSince)await api('/demo/recovery','POST',{offlineSince,recoveredAt:new Date().toISOString(),localActions:[]});await api('/demo/status','POST',{online:true,offlineMode:false});offlineSince=null;}catch(e){status(e.message);}};
+connect();
+</script></body></html>
