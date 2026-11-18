@@ -4,6 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const {bearer}=require('./auth');
 const { ZodError } = require('zod');
+const { listRecommendations, actOnRecommendation } = require('./recommendations');
 const { ranges } = require('./store');
 const { ApiError } = require('./validation');
 
@@ -38,6 +39,11 @@ function createApp(service, config) {
   });
   app.get('/api/outdoor', (req,res) => res.json(service.weather.outdoor()));
   app.get('/api/forecast', async (req,res) => res.json(await service.forecast()));
+  app.get('/api/recommendations', async (req,res) => res.json(await listRecommendations(service)));
+  for (const action of ['apply', 'reject', 'revert']) {
+    app.post('/api/recommendations/:id/' + action, async (req,res) =>
+      res.json(await actOnRecommendation(service, req.params.id, action)));
+  }
   app.post('/api/decisions/:id/approve', async (req,res) => res.status(202).json(await service.decide(req.params.id, true)));
   app.post('/api/decisions/:id/reject', async (req,res) => res.json(await service.decide(req.params.id, false)));
   app.get('/api/settings/automation', (req,res) => res.json(service.state.settings));

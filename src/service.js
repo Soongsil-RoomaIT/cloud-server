@@ -1,6 +1,7 @@
 const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const v = require('./validation');
+const { ruleKeys, manualObservation, collectRecommendation } = require('./recommendations');
 
 const defaults = { enabled: false, mode: 'APPROVAL', humidityOn: 65, humidityOff: 55, co2Open: 1000, pm25On: 35, rainProbability: 60 };
 function initialState() {
@@ -20,6 +21,8 @@ class RoomService extends EventEmitter {
   }
   async init() {
     await this.store.init(); this.state = await this.store.load() || this.state; this.latest = await this.store.latest();
+    this.state.thresholdSamples ??= {};
+    this.state.appliedThresholds ??= {};
     this.state.confirmedDevices = [];
     this.state.idempotency ||= {}; this.state.legacy ||= { seen: [], localActions: [], offlineSince: null };
     if (!this.config.demo && this.config.mqttProtocol === 'edge-agent') this.device('dehumidifier-1').actions = [];
@@ -39,10 +42,10 @@ class RoomService extends EventEmitter {
   run(fn) {
     const next = this.tail.then(async () => {
       const before = structuredClone(this.state), oldLatest = this.latest;
-      this.events = []; this.effects = [];
+      this.events = []; this.effects = []; this.recommendationChange = null;
       try {
         const result = await fn();
-        this.trim(); await this.store.save(this.state);
+        this.trim(); await this.store.save(this.state, this.recommendationChange);
         const events = this.events, effects = this.effects;
         this.lastError = null;
         for (const event of events) this.emit('message', event);
@@ -110,7 +113,12 @@ class RoomService extends EventEmitter {
         if (ack.executedAt < c.createdAt || Date.parse(ack.executedAt) > now + 30000) throw new v.ApiError(400, '명령 실행 시각 오류');
         this.touch(undefined, now);
         if (ack.status === 'EXECUTED' && ack.executedAt > c.expiresAt) throw new v.ApiError(400, '만료된 명령의 실행 확인입니다. 별도 기기 상태를 보고하세요.');
-        if (c.status === 'PENDING') this.finish(c, ack.status, ack.reason, ack.executedAt);
+        if (c.status === 'PENDING') {
+          this.finish(c, ack.status, ack.reason, ack.executedAt);
+          if (ack.status === 'EXECUTED' && c.thresholdObservation) {
+            await collectRecommendation(this, c.thresholdObservation);
+          }
+        }
       } else if (kind === 'recovery') {
         const report = v.recovery.parse(payload);
         if (Date.parse(report.recoveredAt) > now + 30000) throw new v.ApiError(400, '복구 시각 오류');
@@ -160,6 +168,10 @@ class RoomService extends EventEmitter {
     if (this.state.edge.offlineMode) throw new v.ApiError(409, '엣지가 자체 제어 중입니다. 클라우드 모드 복귀 후 조작하세요.');
     if (this.state.commands.some(c => c.deviceId === id && c.status === 'PENDING')) throw new v.ApiError(409, '이 기기에 처리 중인 명령이 있습니다.');
     const c = { id: randomUUID(), deviceId: id, action, source, reason, status: 'PENDING', createdAt: new Date(now).toISOString(), expiresAt: new Date(now+this.config.commandTimeoutMs).toISOString() };
+    if (source === 'MANUAL' && this.state.confirmedDevices.includes(id)) {
+      const observation = manualObservation(device, action, this.latest, now);
+      if (observation) c.thresholdObservation = observation;
+    }
     this.state.commands.push(c);
     if (source === 'MANUAL') this.state.manualUntil[id] = now + 10 * 60000;
     this.effects.push(async () => {
@@ -185,6 +197,9 @@ class RoomService extends EventEmitter {
     });
   }
   updateSettings(body) { const next = v.settings.parse(body); return this.run(() => {
+    for (const [metric, key] of Object.entries(ruleKeys)) {
+      if (this.state.settings[key] !== next[key]) this.state.appliedThresholds[metric] = [];
+    }
     this.state.settings = next;
     const d = this.device('door-1'); d.autoCloseAt = d.state === 'OPEN' && this.state.doorOpenedAt && next.enabled && next.mode === 'AUTO' ? new Date(Date.parse(this.state.doorOpenedAt)+600000).toISOString() : null;
     this.event('device.state', d); this.evaluate(); return next;

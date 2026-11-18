@@ -2,6 +2,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { Pool } = require('pg');
 
+const { ApiError } = require('./validation');
+const conflict = () => new ApiError(409, '이미 변경된 추천입니다. 목록을 다시 조회하세요.');
+
 const ranges = { '1h': [3600, 60], '24h': [86400, 300], '7d': [604800, 3600] };
 const metrics = ['temperature', 'humidity', 'co2', 'pm25', 'pm10'];
 function windowFor(range, now) {
@@ -20,10 +23,21 @@ function averageMetric(rows, key) {
   return count ? sum / count : null;
 }
 class MemoryStore {
-  constructor() { this.readings = new Map(); this.state = null; }
+  constructor() { this.readings = new Map(); this.recommendations = new Map(); this.state = null; }
   async init() {}
   async latestForecast() { return null; } // The demo has no indoor prediction model.
-  async save(state) { this.state = structuredClone(state); }
+  async listRecommendations() {
+    return structuredClone([...this.recommendations.values()]).sort((a,b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  }
+  async save(state, change) {
+    const saved = structuredClone(state);
+    if (change) {
+      const { record, previous } = change;
+      if ((this.recommendations.get(record.id)?.status ?? null) !== (previous?.status ?? null)) throw conflict();
+      this.recommendations.set(record.id, structuredClone(record));
+    }
+    this.state = saved;
+  }
   async load() { return structuredClone(this.state); }
   async insert(reading) {
     if (this.readings.has(reading.measuredAt)) return false;
@@ -67,8 +81,28 @@ class PostgresStore {
     };
   }
   async load() { return (await this.pool.query("SELECT payload FROM room_state WHERE id='room-1'")).rows[0]?.payload || null; }
-  async save(state) {
-    await this.pool.query("INSERT INTO room_state(id,payload) VALUES('room-1',$1::jsonb) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=now()", [JSON.stringify(state)]);
+  async listRecommendations() {
+    const { rows } = await this.pool.query("SELECT payload FROM recommendation ORDER BY (payload->>'createdAt')::timestamptz DESC, id DESC");
+    return rows.map(row => row.payload);
+  }
+  async save(state, change) {
+    const upsert = 'ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=now()';
+    const params = [JSON.stringify(state)];
+    if (!change) {
+      await this.pool.query("INSERT INTO room_state(id,payload) VALUES('room-1',$1::jsonb) " + upsert, params);
+      return;
+    }
+    // The rule value and the recommendation status commit in one SQL statement.
+    const { record, previous } = change;
+    params.push(record.id, JSON.stringify(record));
+    let write = 'INSERT INTO recommendation(id,payload) VALUES ($2,$3::jsonb) ON CONFLICT DO NOTHING';
+    if (previous) {
+      params.push(JSON.stringify(previous));
+      write = 'UPDATE recommendation SET payload=$3::jsonb WHERE id=$2 AND payload=$4::jsonb';
+    }
+    const { rows } = await this.pool.query('WITH changed AS (' + write + ' RETURNING id) ' +
+      "INSERT INTO room_state(id,payload) SELECT 'room-1',$1::jsonb FROM changed " + upsert + ' RETURNING id', params);
+    if (!rows.length) throw conflict();
   }
   async insert(r) {
     const result = await this.pool.query('INSERT INTO sensor_readings VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING measured_at', [r.measuredAt, ...metrics.map(k => r[k])]);

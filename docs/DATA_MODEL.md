@@ -6,6 +6,7 @@
 |---|---|---|
 | sensor_readings | measured_at timestamptz | 온도·습도·CO₂·PM2.5·PM10 수치 |
 | prediction | generated_at timestamptz | 1시간 뒤 실내 온습도 예측 한 회분(metrics JSONB), 모델 버전, 선제 제어 사용 여부 |
+| recommendation | id text | 기준값 추천 한 건과 처리 상태(payload JSONB) |
 | room_state | id = room-1 | payload JSONB, updated_at |
 
 room_state에는 devices, confirmedDevices, edge, settings, commands, decisions, notifications, idempotency, recovery와 Legacy 이벤트 중복 차단 기록을 함께 저장합니다. 작은 단일 세대 상태를 원자적으로 저장하기 위한 구조이며 정규화된 여러 관계 테이블로 구현했다고 주장하지 않습니다.

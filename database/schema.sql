@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS prediction (
   control_enabled boolean NOT NULL DEFAULT false,
   metrics jsonb NOT NULL CHECK (jsonb_typeof(metrics) = 'array' AND jsonb_array_length(metrics) > 0)
 );
+-- The recommendation payload uses the same field names as the dashboard.
+CREATE TABLE IF NOT EXISTS recommendation (
+  id text PRIMARY KEY,
+  payload jsonb NOT NULL CHECK (payload ?& ARRAY['id','metric','status','current','proposed','createdAt']
+    AND payload->>'id' = id AND payload->>'status' IN ('PROPOSED','APPLIED','REJECTED','REVERTED'))
+);
 -- Small room state is saved atomically. JSON includes devices, commands,
 -- decisions, notifications, settings, recovery deduplication and edge status.
 CREATE TABLE IF NOT EXISTS room_state (
