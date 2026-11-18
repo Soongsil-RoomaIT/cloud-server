@@ -44,6 +44,7 @@ npm start
 | GET | `/api/edge/status` | online/offlineMode/lastSeenAt |
 | POST | `/api/devices/:id/commands` | `{ "action": "OPEN" }`, Idempotency-Key 권장 |
 | GET | `/api/commands`, `/api/commands/:id` | 최근 명령 이력·상세 |
+| GET | `/api/outdoor` | 외기 온습도·강수확률·PM2.5·PM10, 발표/조회 시각, 전후 2시간 자료 |
 | GET | `/api/forecast` | 예보·실황·추천·source/stale |
 | POST | `/api/decisions/:id/approve`, `/reject` | 추천 승인·거절 |
 | GET, PUT | `/api/settings/automation` | 자동화 설정 전체 조회·저장 |
@@ -69,7 +70,7 @@ npm start
 4. 기상청 활용 신청 후 **디코딩된** 서비스키와 실제 위치 격자(KMA_NX/NY)를 설정합니다. 기본 60/127은 예시이며 사용자의 위치를 추정한 것이 아닙니다.
 5. 실제 장비를 연결하기 전 팀 연동 문서의 엣지 완료 ACK·인증·Gateway·단일 자동화 소유자 항목을 맞추고 인수시험을 수행합니다.
 
-기상청 데이터는 [단기예보 조회서비스](https://www.data.go.kr/data/15084084/openapi.do)를 사용합니다. 미세먼지는 이 API가 제공하지 않아 실모드 `pm25`는 null입니다. 실외 공기질 소스가 연결되기 전 자동 창문 열기는 보류하며, 강수확률에 따른 닫기 판단은 가능합니다. 예측은 학습 모델이 아닌 설명 가능한 규칙이며 과거 2시간 실황은 조회·표시용입니다.
+기상청 데이터는 [단기예보 조회서비스](https://www.data.go.kr/data/15084084/openapi.do)를 사용합니다. 외기 카드의 미세먼지는 [에어코리아 측정소별 실시간 측정정보](https://www.data.go.kr/data/15073861/openapi.do)를 사용합니다. 실행 환경에 `AIRKOREA_SERVICE_KEY`(디코딩 키)와 `AIRKOREA_STATION_NAME`(해당 지역 측정소명)을 설정하세요. 컨테이너로 실행한다면 두 변수도 cloud-server 컨테이너에 전달해야 합니다. 외기 API는 키가 없는 항목에 null과 안내 메시지를 반환합니다. publishedAt은 기상청 예보 발표 시각(대기질만 있을 때는 측정 시각), fetchedAt은 가장 최근 성공한 조회 시각입니다. 어느 출처든 마지막 조회가 3시간을 넘기거나 대기질 측정이 3시간을 넘기면 stale로 표시합니다. 기존 자동화는 기상청 예보를 사용하며 강수확률에 따른 닫기 판단이 가능합니다. 예측은 학습 모델이 아닌 설명 가능한 규칙이며 과거 2시간 실황은 조회·표시용입니다.
 
 서버 기본 bind는 127.0.0.1입니다. `API_BEARER_TOKEN`은 로컬 연동 점검용 공통 토큰입니다. JWT_ISSUER_URI, JWT_JWK_SET_URI, JWT_AUDIENCE, ROOM_ALLOWED_SUBJECTS를 설정하면 Keycloak RS256 서명·issuer·audience·exp·sub와 해당 공간 사용자 권한을 직접 검증합니다. 토큰 인증 시 WS는 첫 auth 메시지 또는 D Gateway가 전달하는 Authorization handshake 헤더를 받습니다. 현재 팀 프론트엔드는 auth 메시지를 아직 구현하지 않아 기본 데모에서는 인증을 비워 둡니다. `NODE_ENV=production`은 데모 및 JWT 설정 없는 실행을 거부합니다.
 

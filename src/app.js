@@ -36,6 +36,7 @@ function createApp(service, config) {
     const c = service.state.commands.find(c => c.id === req.params.id);
     if (!c) throw new ApiError(404, '명령을 찾을 수 없습니다.'); res.json(c);
   });
+  app.get('/api/outdoor', (req,res) => res.json(service.weather.outdoor()));
   app.get('/api/forecast', (req,res) => res.json({ ...service.weather.current(), decisions: [...service.state.decisions].reverse() }));
   app.post('/api/decisions/:id/approve', async (req,res) => res.status(202).json(await service.decide(req.params.id, true)));
   app.post('/api/decisions/:id/reject', async (req,res) => res.json(await service.decide(req.params.id, false)));

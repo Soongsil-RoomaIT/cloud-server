@@ -21,6 +21,7 @@ function config(env = process.env) {
     mqttPrefix: env.MQTT_TOPIC_PREFIX || 'roomcare/room-001', mqttProtocol: env.MQTT_PROTOCOL || 'edge-agent',
     heartbeatMs: 15000, edgeTimeoutMs: integer('EDGE_TIMEOUT_MS', 10000),
     commandTimeoutMs: integer('COMMAND_TIMEOUT_MS', 5000),
+    airKey: env.AIRKOREA_SERVICE_KEY || '', airStation: env.AIRKOREA_STATION_NAME || '',
     kmaKey: env.KMA_SERVICE_KEY || '', kmaNx: env.KMA_NX || '60', kmaNy: env.KMA_NY || '127',
   };
   if (!['edge-agent', 'roomait-v1'].includes(result.mqttProtocol)) throw new Error('Invalid MQTT_PROTOCOL');

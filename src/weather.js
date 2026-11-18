@@ -1,3 +1,4 @@
+const { AirQuality, outdoorReport } = require('./outdoor');
 const HOUR = 3600000;
 function kstParts(time) {
   const value = new Date(time + 9 * HOUR).toISOString();
@@ -12,7 +13,7 @@ function forecastBase(now) {
   }
 }
 class WeatherService {
-  constructor(config, fetcher = fetch) { this.config = config; this.fetcher = fetcher; this.data = { source: 'unavailable', updatedAt: null, weather: [], observations: [], message: '기상청 API 키를 설정하면 예보를 조회합니다.' }; }
+  constructor(config, fetcher = fetch) { this.config = config; this.fetcher = fetcher; this.air = new AirQuality(config, fetcher); this.publishedAt = null; this.data = { source: 'unavailable', updatedAt: null, weather: [], observations: [], message: '기상청 API 키를 설정하면 예보를 조회합니다.' }; }
   current() {
     if (this.data.updatedAt && Date.now() - Date.parse(this.data.updatedAt) > 30 * 60000) return { ...this.data, stale: true, weather: [] };
     return { ...this.data, stale: false };
@@ -28,22 +29,28 @@ class WeatherService {
     if (!Array.isArray(items)) throw new Error('기상청 데이터 형식 오류');
     return items;
   }
+  outdoor(now = Date.now()) { return outdoorReport(this.data, this.publishedAt, this.air, now); }
   async refresh(now = Date.now()) {
+    await Promise.all([this.refreshWeather(now), this.air.refresh(now)]);
+  }
+  async refreshWeather(now) {
     if (this.config.demo) {
+      this.publishedAt = new Date(Math.floor(now/HOUR)*HOUR).toISOString();
       this.data = { source: 'demo', updatedAt: new Date(now).toISOString(), observations: [-2,-1].map(n => ({ time: new Date(now+n*HOUR).toISOString(), temp: 21, humidity: 55, precipitation: 0 })),
         weather: [0,1,2].map(n => ({ time: new Date(now+n*HOUR).toISOString(), temp: 22+n, humidity: 55, precipitationProb: 20, pm25: 14 })) };
       return;
     }
     if (!this.config.kmaKey) return;
     try {
-      const items = await this.request('getVilageFcst', forecastBase(now));
+      const base = forecastBase(now);
+      const items = await this.request('getVilageFcst', base);
       const groups = new Map();
       for (const item of items) {
         const time = new Date(`${item.fcstDate.slice(0,4)}-${item.fcstDate.slice(4,6)}-${item.fcstDate.slice(6,8)}T${item.fcstTime.slice(0,2)}:${item.fcstTime.slice(2,4)}:00+09:00`).toISOString();
         if (Date.parse(time) < now - HOUR || Date.parse(time) > now + 2 * HOUR) continue;
         const row = groups.get(time) || { time, pm25: null };
         const field = { TMP: 'temp', REH: 'humidity', POP: 'precipitationProb' }[item.category];
-        if (field && item.fcstValue !== '' && Number.isFinite(Number(item.fcstValue))) row[field] = Number(item.fcstValue);
+        if (field && item.fcstValue != null && String(item.fcstValue).trim() !== '' && Number.isFinite(Number(item.fcstValue))) row[field] = Number(item.fcstValue);
         groups.set(time, row);
       }
       const weather = [...groups.values()].filter(r => ['temp','humidity','precipitationProb'].every(k => Number.isFinite(r[k]))).sort((a,b) => a.time.localeCompare(b.time));
@@ -54,11 +61,12 @@ class WeatherService {
         const p = kstParts(now - n * HOUR);
         try {
           const rows = await this.request('getUltraSrtNcst', { date: p.date, time: p.hour + '00' });
-          const values = Object.fromEntries(rows.map(r => [r.category, Number(r.obsrValue)]));
+          const values = Object.fromEntries(rows.map(r => [r.category, r.obsrValue == null || String(r.obsrValue).trim() === '' ? NaN : Number(r.obsrValue)]));
           if (Number.isFinite(values.T1H) && Number.isFinite(values.REH)) observations.push({ time: new Date(`${p.date.slice(0,4)}-${p.date.slice(4,6)}-${p.date.slice(6,8)}T${p.hour}:00:00+09:00`).toISOString(), temp: values.T1H, humidity: values.REH, precipitation: Number.isFinite(values.RN1) ? values.RN1 : null });
         } catch { /* Forecast remains usable if an observation is missing. */ }
       }
-      this.data = { source: 'kma', updatedAt: new Date(now).toISOString(), weather, observations, message: '기상청은 미세먼지 예보를 제공하지 않아 pm25는 null입니다. 실외 미세먼지가 확인되기 전 자동 환기는 보류합니다.' };
+      this.publishedAt = new Date(base.date.slice(0,4)+'-'+base.date.slice(4,6)+'-'+base.date.slice(6,8)+'T'+base.time.slice(0,2)+':00:00+09:00').toISOString();
+      this.data = { source: 'kma', updatedAt: new Date(now).toISOString(), weather, observations, message: null };
     } catch {
       this.data = { ...this.data, message: '기상청 조회에 실패했습니다. 마지막 수신 시각과 stale을 확인하세요.' };
     }
