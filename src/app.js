@@ -37,7 +37,7 @@ function createApp(service, config) {
     if (!c) throw new ApiError(404, '명령을 찾을 수 없습니다.'); res.json(c);
   });
   app.get('/api/outdoor', (req,res) => res.json(service.weather.outdoor()));
-  app.get('/api/forecast', (req,res) => res.json({ ...service.weather.current(), decisions: [...service.state.decisions].reverse() }));
+  app.get('/api/forecast', async (req,res) => res.json(await service.forecast()));
   app.post('/api/decisions/:id/approve', async (req,res) => res.status(202).json(await service.decide(req.params.id, true)));
   app.post('/api/decisions/:id/reject', async (req,res) => res.json(await service.decide(req.params.id, false)));
   app.get('/api/settings/automation', (req,res) => res.json(service.state.settings));
@@ -48,6 +48,7 @@ function createApp(service, config) {
     if (!n) throw new ApiError(404, '알림을 찾을 수 없습니다.'); n.read = true; return n;
   })));
   if (config.demo) {
+    app.get('/api/demo/decisions', (req,res) => res.json([...service.state.decisions].reverse()));
     app.post('/api/demo/:kind', async (req,res) => {
       if (!['sensors','devices','status','recovery'].includes(req.params.kind)) throw new ApiError(404, '지원하지 않는 데모 입력입니다.');
       await service.ingest(req.params.kind, req.body);

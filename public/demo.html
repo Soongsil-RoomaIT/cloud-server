@@ -35,8 +35,8 @@ async function devices() {
     for(const a of (['WINDOW','FRONT_DOOR'].includes(d.type)?['OPEN','CLOSE']:['ON','OFF']))div.append(button(a,async()=>{const c=await api('/devices/'+d.id+'/commands','POST',{action:a});status('명령 접수 · 실행 확인 대기');log('command '+c.commandId);}));$('devices').append(div);}
 }
 async function decisions() {
-  const data=await api('/forecast');$('decisions').replaceChildren();
-  for(const d of data.decisions.filter(d=>d.status==='PROPOSED')){const div=document.createElement('div');const text=document.createElement('span');text.textContent=d.deviceId+' '+d.action+' · '+d.reasons.map(r=>r.factor+' '+r.value).join(', ');div.append(text);for(const [label,action] of [['승인','approve'],['거절','reject']])div.append(button(label,async()=>{await api('/decisions/'+d.id+'/'+action,'POST');await decisions();}));$('decisions').append(div);}
+  const rows=await api('/demo/decisions');$('decisions').replaceChildren();
+  for(const d of rows.filter(d=>d.status==='PROPOSED')){const div=document.createElement('div');const text=document.createElement('span');text.textContent=d.deviceId+' '+d.action+' · '+d.reasons.map(r=>r.factor+' '+r.value).join(', ');div.append(text);for(const [label,action] of [['승인','approve'],['거절','reject']])div.append(button(label,async()=>{await api('/decisions/'+d.id+'/'+action,'POST');await decisions();}));$('decisions').append(div);}
 }
 async function initialize() {
   sensors(await api('/sensors/latest'));await devices();settings=await api('/settings/automation');$('enabled').checked=settings.enabled;$('mode').value=settings.mode;await decisions();

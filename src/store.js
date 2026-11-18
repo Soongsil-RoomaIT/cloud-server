@@ -22,6 +22,7 @@ function averageMetric(rows, key) {
 class MemoryStore {
   constructor() { this.readings = new Map(); this.state = null; }
   async init() {}
+  async latestForecast() { return null; } // The demo has no indoor prediction model.
   async save(state) { this.state = structuredClone(state); }
   async load() { return structuredClone(this.state); }
   async insert(reading) {
@@ -53,6 +54,18 @@ class MemoryStore {
 class PostgresStore {
   constructor(url, pool) { this.pool = pool || new Pool({ connectionString: url, connectionTimeoutMillis: 5000, max: 5 }); }
   async init() { await this.pool.query(await fs.readFile(path.join(__dirname, '../database/schema.sql'), 'utf8')); }
+  async latestForecast() {
+    const { rows } = await this.pool.query(
+      'SELECT generated_at, model_version, control_enabled, metrics FROM prediction ORDER BY generated_at DESC LIMIT 1'
+    );
+    if (!rows.length) return null;
+    const row = rows[0];
+    const generated = new Date(row.generated_at);
+    return {
+      generatedAt: generated.toISOString(), targetAt: new Date(generated.getTime() + 3600000).toISOString(),
+      controlEnabled: row.control_enabled, modelVersion: row.model_version, message: null, metrics: row.metrics,
+    };
+  }
   async load() { return (await this.pool.query("SELECT payload FROM room_state WHERE id='room-1'")).rows[0]?.payload || null; }
   async save(state) {
     await this.pool.query("INSERT INTO room_state(id,payload) VALUES('room-1',$1::jsonb) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=now()", [JSON.stringify(state)]);

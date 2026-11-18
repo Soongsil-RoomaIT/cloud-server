@@ -1,5 +1,6 @@
 const { WebSocketServer, WebSocket } = require('ws');
 const {bearer}=require('./auth');
+const { isDeepStrictEqual } = require('node:util');
 
 function attachRealtime(server, service, config) {
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16384,
@@ -45,11 +46,26 @@ function attachRealtime(server, service, config) {
     socket.on('error', () => {});
   });
   service.on('message', broadcast);
-  const heartbeat = setInterval(() => broadcast({ type: 'heartbeat' }), config.heartbeatMs);
+  let lastForecast, pendingForecast;
+  async function refreshForecast() {
+    const forecast = await service.forecast();
+    if (!isDeepStrictEqual(forecast, lastForecast)) {
+      if (forecast.metrics.length || lastForecast) broadcast({ type: 'forecast.update', payload: forecast });
+      lastForecast = forecast;
+    }
+  }
+  const heartbeat = setInterval(() => {
+    broadcast({ type: 'heartbeat' });
+    if (pendingForecast || !Array.from(wss.clients).some(socket => socket.authenticated)) return;
+    pendingForecast = refreshForecast()
+      .catch(() => { service.lastError = '실내 예측 조회 오류'; })
+      .finally(() => { pendingForecast = null; });
+  }, config.heartbeatMs);
   return { wss, close: async () => {
     clearInterval(heartbeat); service.off('message', broadcast);
     for (const s of wss.clients) s.terminate();
     await new Promise(resolve => wss.close(resolve));
+    await pendingForecast;
   } };
 }
 module.exports = { attachRealtime };

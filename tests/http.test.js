@@ -65,3 +65,54 @@ test('fresh live-like server reports no readings and no online edge rather than 
   assert.equal((await(await fetch(r.url+'/api/edge/status')).json()).online,false);
   assert.deepEqual((await(await fetch(r.url+'/api/sensors/history?range=1h')).json()).points,[]);
 });
+
+test('demo serves the indoor model waiting state and still lists decisions for approval', async t => {
+  const runtime = await fixture(t);
+  const response = await fetch(runtime.url + '/api/forecast');
+  assert.equal(response.status, 200);
+  const forecast = await response.json();
+  assert.deepEqual(Object.keys(forecast).sort(), ['message', 'metrics']);
+  assert.deepEqual(forecast.metrics, []);
+  assert.match(forecast.message, /모델.*준비/);
+  const decisions = await fetch(runtime.url + '/api/demo/decisions');
+  assert.equal(decisions.status, 200);
+  assert.deepEqual(await decisions.json(), [...runtime.service.state.decisions].reverse());
+});
+
+test('a stored one-hour prediction reaches REST and WebSocket with the same payload', async t => {
+  const { PGlite } = require('@electric-sql/pglite');
+  const { PostgresStore } = require('../src/store');
+  const db = new PGlite();
+  const store = new PostgresStore('', {
+    query: (sql, params) => params ? db.query(sql, params) : db.exec(sql).then(results => results[0]),
+    end: () => db.close(),
+  });
+  const transport = { start: async () => {}, close: async () => {}, ready: () => false };
+  const runtime = await fixture(t, { store, transport, heartbeatMs: 50 });
+  const read = async () => (await fetch(runtime.url + '/api/forecast')).json();
+  assert.deepEqual((await read()).metrics, []);
+  const socket = new WebSocket(runtime.url.replace('http:', 'ws:') + '/ws');
+  t.after(() => socket.terminate());
+  const list = messages(socket);
+  await waitFor(() => list.some(m => m.type === 'heartbeat'));
+
+  const metrics = [
+    { metric: 'humidity', predicted: 68, baseline: 62, actual: null, mae: 2.1, baselineMae: 3.4 },
+    { metric: 'temperature', predicted: 23.4, baseline: 23, actual: null, mae: 0.4, baselineMae: 0.7 },
+  ];
+  const generatedAt = '2026-11-18T14:30:00.000Z';
+  const insert = 'INSERT INTO prediction (generated_at, model_version, metrics) VALUES ($1, $2, $3)';
+  await db.query(insert, [generatedAt, 'v1', JSON.stringify(metrics)]);
+  await db.query(insert, ['2026-11-18T14:20:00Z', 'older', JSON.stringify(metrics)]);
+  const expected = {
+    generatedAt, targetAt: '2026-11-18T15:30:00.000Z', modelVersion: 'v1',
+    controlEnabled: false, message: null, metrics,
+  };
+  assert.deepEqual(await read(), expected);
+  const updates = () => list.filter(m => m.type === 'forecast.update');
+  await waitFor(() => updates().length);
+  assert.deepEqual(updates()[0].payload, expected);
+  const count = list.filter(m => m.type === 'heartbeat').length;
+  await waitFor(() => list.filter(m => m.type === 'heartbeat').length >= count + 2);
+  assert.equal(updates().length, 1);
+});

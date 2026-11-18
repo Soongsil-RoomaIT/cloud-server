@@ -31,6 +31,11 @@ class RoomService extends EventEmitter {
     }
     await this.store.save(this.state);
   }
+  async forecast() {
+    return (await this.store.latestForecast()) ?? {
+      metrics: [], message: '1시간 뒤 실내 습도와 온도를 예측하는 모델을 준비하고 있습니다.',
+    };
+  }
   run(fn) {
     const next = this.tail.then(async () => {
       const before = structuredClone(this.state), oldLatest = this.latest;

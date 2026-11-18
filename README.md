@@ -45,12 +45,14 @@ npm start
 | POST | `/api/devices/:id/commands` | `{ "action": "OPEN" }`, Idempotency-Key 권장 |
 | GET | `/api/commands`, `/api/commands/:id` | 최근 명령 이력·상세 |
 | GET | `/api/outdoor` | 외기 온습도·강수확률·PM2.5·PM10, 발표/조회 시각, 전후 2시간 자료 |
-| GET | `/api/forecast` | 예보·실황·추천·source/stale |
+| GET | `/api/forecast` | 1시간 뒤 실내 습도·온도 예측. 모델 준비 중에는 빈 metrics와 안내 문구 |
 | POST | `/api/decisions/:id/approve`, `/reject` | 추천 승인·거절 |
 | GET, PUT | `/api/settings/automation` | 자동화 설정 전체 조회·저장 |
 | GET | `/api/notifications` | 웹 알림 목록 |
 | PATCH | `/api/notifications/:id/read` | 읽음 처리 |
 | WS | `/ws` | 실시간 메시지 |
+
+예측 모델이 완성되면 모델 실행 측에서 PostgreSQL의 `prediction` 테이블에 계산 시각(`generated_at`), 모델 버전(`model_version`), 예측 기반 제어 사용 여부(`control_enabled`), 지표 배열(`metrics`)을 한 행으로 저장합니다. 각 지표에는 `metric`(humidity 또는 temperature), `predicted`, `baseline`, `actual`, `mae`, `baselineMae`를 넣습니다. 미확정 수치는 null입니다. API는 가장 최근 행을 반환하고, 연결 중인 WebSocket에는 기본 15초마다 변경을 확인해 같은 형식의 `forecast.update`를 보냅니다.
 
 동작 완료는 실제 ACK 또는 현관문 센서 확인으로 판단합니다. 타임아웃은 기기가 움직이지 않았다는 보장이 아니라 **정해진 시간 안에 확인하지 못했다는 뜻**입니다. 명령을 자동 재전송하지 않습니다. 결정 상태에는 초안 외에 `FAILED`, `EXPIRED`가 있습니다.
 
