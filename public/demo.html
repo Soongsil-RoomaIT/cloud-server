@@ -26,7 +26,7 @@ function button(label, fn) { const b=document.createElement('button');b.textCont
 function sensors(r) {
   $('sensors').replaceChildren();
   for(const [key,label,unit] of [['temperature','온도','°C'],['humidity','습도','%'],['co2','CO₂','ppm'],['pm25','초미세먼지','µg/m³'],['pm10','미세먼지','µg/m³']]){
-    const div=document.createElement('div');div.className='metric';div.textContent=label;const n=document.createElement('strong');n.textContent=r[key].toFixed(1)+' '+unit;div.append(n);$('sensors').append(div);
+    const div=document.createElement('div');div.className='metric';div.textContent=label;const n=document.createElement('strong');n.textContent=r[key] == null ? '센서 없음' : r[key].toFixed(1)+' '+unit;div.append(n);$('sensors').append(div);
   }$('measured').textContent='측정 시각 '+new Date(r.measuredAt).toLocaleString();
 }
 async function devices() {

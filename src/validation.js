@@ -2,9 +2,12 @@ const { z } = require('zod');
 
 const timestamp = z.string().datetime({ offset: true }).transform(s => new Date(s).toISOString());
 const reading = z.object({
-  measuredAt: timestamp, temperature: z.number().min(-80).max(100),
-  humidity: z.number().min(0).max(100), co2: z.number().min(0).max(100000),
-  pm25: z.number().min(0).max(10000), pm10: z.number().min(0).max(10000),
+  measuredAt: timestamp, 
+  temperature: z.number().min(-80).max(100).nullable().default(null),
+  humidity: z.number().min(0).max(100).nullable().default(null), 
+  co2: z.number().min(0).max(100000).nullable().default(null),
+  pm25: z.number().min(0).max(10000).nullable().default(null), 
+  pm10: z.number().min(0).max(10000).nullable().default(null),
 }).strict();
 const deviceState = z.enum(['OPEN', 'CLOSED', 'ON', 'OFF']);
 const action = z.enum(['OPEN', 'CLOSE', 'ON', 'OFF']);
@@ -20,11 +23,14 @@ const settings = z.object({
   co2Open: z.number().min(400).max(5000), pm25On: z.number().min(1).max(500),
   rainProbability: z.number().min(0).max(100),
 }).strict().refine(s => s.humidityOff < s.humidityOn, 'humidityOff must be below humidityOn');
+
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+
 function stateFor(action) { return action === 'CLOSE' ? 'CLOSED' : action; }
 function validState(device, state) {
   return (['WINDOW', 'FRONT_DOOR'].includes(device.type) ? ['OPEN', 'CLOSED'] : ['ON', 'OFF']).includes(state);
 }
+
 module.exports = { z, timestamp, reading, action, deviceUpdate, recovery, edgeStatus, ack, settings, ApiError, stateFor, validState };

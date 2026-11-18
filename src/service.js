@@ -189,16 +189,18 @@ class RoomService extends EventEmitter {
     const add = (deviceId, action, factor, value, threshold) => items.push({ deviceId, action, reasons: [{ factor, value, threshold }] });
     if (this.state.doorOpenedAt && now - Date.parse(this.state.doorOpenedAt) >= 10 * 60000) add('door-1', 'CLOSE', '현관문 열림', '10분 이상', '10분');
     const fresh = r && now - Date.parse(r.measuredAt) <= 15000;
-    if (fresh) {
-    if (r.humidity >= s.humidityOn) add('dehumidifier-1', 'ON', '실내 습도', `${r.humidity}%`, `${s.humidityOn}% 이상`);
-    else if (r.humidity <= s.humidityOff) add('dehumidifier-1', 'OFF', '실내 습도', `${r.humidity}%`, `${s.humidityOff}% 이하`);
-    if (r.pm25 >= s.pm25On) add('purifier-1', 'ON', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On} 이상`);
-    else if (r.pm25 <= s.pm25On * 0.6) add('purifier-1', 'OFF', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On * 0.6} 이하`);
+    if (fresh && r.humidity != null) {
+      if (r.humidity >= s.humidityOn) add('dehumidifier-1', 'ON', '실내 습도', `${r.humidity}%`, `${s.humidityOn}% 이상`);
+      else if (r.humidity <= s.humidityOff) add('dehumidifier-1', 'OFF', '실내 습도', `${r.humidity}%`, `${s.humidityOff}% 이하`);
+    }
+    if (fresh && r.pm25 != null) {
+      if (r.pm25 >= s.pm25On) add('purifier-1', 'ON', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On} 이상`);
+      else if (r.pm25 <= s.pm25On * 0.6) add('purifier-1', 'OFF', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On * 0.6} 이하`);
     }
     const weather = this.weather.current().weather.filter(w => Date.parse(w.time) >= now - 3600000 && Date.parse(w.time) <= now + 2 * 3600000);
     if (weather.some(w => w.precipitationProb >= s.rainProbability)) add('window-1', 'CLOSE', '강수확률', `${Math.max(...weather.map(w => w.precipitationProb))}%`, `${s.rainProbability}% 이상`);
     else if (weather.some(w => Number.isFinite(w.pm25) && w.pm25 >= s.pm25On)) add('window-1', 'CLOSE', '실외 초미세먼지', '높음', `${s.pm25On} 이상`);
-    else if (fresh && r.co2 >= s.co2Open && weather.length && weather.every(w => Number.isFinite(w.pm25) && w.pm25 < s.pm25On && w.precipitationProb < s.rainProbability)) add('window-1', 'OPEN', '실내 CO₂', `${r.co2}ppm`, `${s.co2Open}ppm 이상`);
+    else if (fresh && r.co2 != null && r.co2 >= s.co2Open && weather.length && weather.every(w => Number.isFinite(w.pm25) && w.pm25 < s.pm25On && w.precipitationProb < s.rainProbability)) add('window-1', 'OPEN', '실내 CO₂', `${r.co2}ppm`, `${s.co2Open}ppm 이상`);
     return items;
   }
   evaluate(now = Date.now()) {

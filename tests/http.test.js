@@ -37,8 +37,13 @@ test('standard WS initial status, periodic heartbeat, JSON ping and sensor broad
   await waitFor(()=>list.length);assert.equal(list[0].type,'edge.status');assert.equal(list[0].payload.online,true);
   await waitFor(()=>list.some(m=>m.type==='heartbeat'));list.length=0;s.send(JSON.stringify({type:'ping'}));
   await waitFor(()=>list.some(m=>m.type==='heartbeat'));s.send('null');s.send('{bad json');
-  await r.service.ingest('sensors',{measuredAt:new Date(Date.now()+1).toISOString(),temperature:25,humidity:60,co2:999,pm25:20,pm10:30});
-  await waitFor(()=>list.some(m=>m.type==='sensor.update'&&m.payload.co2===999));
+  const sample = {measuredAt:new Date(Date.now()+1).toISOString(), temperature:25, humidity:60};
+  const expected = {...sample, co2:null, pm25:null, pm10:null};
+  await r.service.ingest('sensors',sample);
+  const update = () => list.find(m=>m.type==='sensor.update' && m.payload.measuredAt===sample.measuredAt);
+  await waitFor(update);
+  assert.deepEqual(update().payload,expected);
+  assert.deepEqual(await (await fetch(r.url+'/api/sensors/latest')).json(),expected);
 });
 test('heartbeat continues through edge outage and reconnect reports recovery',async t=>{
   const r=await fixture(t,{heartbeatMs:100});const s=new WebSocket(r.url.replace('http:','ws:')+'/ws');t.after(()=>s.terminate());const list=messages(s);await waitFor(()=>list.length);

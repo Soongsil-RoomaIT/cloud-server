@@ -19,6 +19,12 @@ test('readings validate numbers, timezone and physical ranges, reject future tim
   for (const bad of [{ co2:'900' },{ humidity:101 },{ measuredAt:'2026-10-01T10:00:00' },{ measuredAt:new Date(Date.now()+60000).toISOString() }]) await assert.rejects(s.ingest('sensors', reading(bad)));
   assert.equal(s.latest, null);
 });
+test('missing humidity and PM2.5 do not trigger low-value appliance rules', async () => {
+  const {s} = await fixture();
+  await s.ingest('sensors', {measuredAt:new Date().toISOString(), humidity:null});
+  assert.equal(s.latest.temperature,null);
+  assert.equal(s.proposals(Date.now()).some(p=>['dehumidifier-1','purifier-1'].includes(p.deviceId)),false);
+});
 test('duplicate and old readings do not regress realtime latest; history is bucket average', async () => {
   const {s,store} = await fixture(); const now=Date.now(), base=Math.floor(now/60000)*60000-60000;
   const events=[];s.on('message',m=>events.push(m));

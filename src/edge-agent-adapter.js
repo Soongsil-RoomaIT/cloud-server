@@ -2,16 +2,19 @@ const { createHash } = require('node:crypto');
 const v = require('./validation');
 const ids = { window: 'window-1', air_purifier: 'purifier-1', door: 'door-1', dehumidifier: 'dehumidifier-1' };
 const names = Object.fromEntries(Object.entries(ids).map(([a,id])=>[id,a]));
+
 function unix(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value * 1000 > Date.now()+30000) throw new v.ApiError(400,'잘못된 Unix 시각입니다.');
   return new Date(value * 1000).toISOString();
 }
+
 function commandForEdge(command) {
   if (!names[command.deviceId]) throw new Error('Unsupported actuator');
   // New fields are ignored by today's edge. It must implement expiration and
   // persistent commandId deduplication before real unattended control is enabled.
   return { actuator: names[command.deviceId], on: ['OPEN','ON'].includes(command.action), commandId: command.commandId, expiresAt: command.expiresAt };
 }
+
 function handleLegacy(service, kind, payload, packet = {}) {
   return service.run(async () => {
     const now=Date.now(), state=service.state;
@@ -25,8 +28,6 @@ function handleLegacy(service, kind, payload, packet = {}) {
     if (kind==='telemetry') {
       const measuredAt=unix(payload?.measuredAt);
       if (Date.parse(measuredAt)<now-8*86400000) return;
-      // The frontend requires all five numbers. Missing PM10 is never invented.
-      if (payload.pm10 == null) { service.touch(undefined,now); state.sensorIssue='엣지에서 PM10을 보내지 않아 완전한 센서 측정값을 기다리고 있습니다.'; return; }
       const r=v.reading.parse({...payload,measuredAt});
       await service.store.insert(r); service.touch(undefined,now); state.sensorIssue=null;
       if (!service.latest || measuredAt>service.latest.measuredAt) { service.latest=r;service.event('sensor.update',r); }
@@ -71,4 +72,5 @@ function handleLegacy(service, kind, payload, packet = {}) {
     service.evaluate(now);
   });
 }
+
 module.exports={handleLegacy,commandForEdge};

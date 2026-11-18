@@ -35,9 +35,10 @@ test('team edge MQTT telemetry/status/events and command format work through a r
  await until(()=>s.state.commands[0].acceptedAt);assert.equal(s.state.commands[0].status,'PENDING');assert.equal(s.device('window-1').state,'CLOSED');
  await edge.publishAsync(config.mqttPrefix+'/status','offline',{qos:1,retain:true});await until(()=>!s.state.edge.online);
 });
-test('legacy missing PM10 is explicit; backlog events deduplicate without inventing execution',async()=>{
+test('legacy accepts partial readings; backlog events deduplicate without inventing execution',async()=>{
  const {s}=await room();
- await handleLegacy(s,'telemetry',{measuredAt:Date.now()/1000,temperature:23,humidity:60,co2:900,pm25:15,pm10:null});assert.equal(s.latest,null);assert.match(s.state.sensorIssue,/PM10/);
+ await handleLegacy(s,'telemetry',{measuredAt:Date.now()/1000,temperature:23,humidity:60,pm10:null});
+ assert.deepEqual(s.latest,{measuredAt:s.latest.measuredAt,temperature:23,humidity:60,co2:null,pm25:null,pm10:null});
  const event={occurredAt:Date.now()/1000,type:'auto_control',detail:{actuator:'window',on:true,reason:'co2'}};
  await handleLegacy(s,'events',event);await handleLegacy(s,'events',event);assert.equal(s.state.notifications.length,1);assert.equal(s.device('window-1').stateSource,'ASSUMED');
 });

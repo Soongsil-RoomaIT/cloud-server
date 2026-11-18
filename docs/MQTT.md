@@ -6,12 +6,12 @@
 
 | 토픽 suffix | 방향 | 처리 |
 |---|---|---|
-| telemetry | Edge→Cloud | Unix 초 measuredAt을 UTC ISO로 변환, 5개 센서 숫자 검증·저장·브로드캐스트 |
+| telemetry | Edge→Cloud | Unix 초 measuredAt을 UTC ISO로 변환, 측정 항목별 숫자 범위 검증·저장·브로드캐스트 |
 | status | Edge→Cloud | 문자열 online/offline, retained online은 생존 증거로 사용하지 않음 |
 | events | Edge→Cloud | occurredAt/type/detail, 모드·복구·현관문·제어 수락·오류 처리 |
 | command | Cloud→Edge | actuator/on + commandId/expiresAt, QoS0, retain=false |
 
-pm10=null인 과거 데이터는 수치를 조작하지 않고 완전한 측정값에서 제외하며 health.sensorIssue를 통해 안내합니다. 다른 필드가 잘못된 메시지도 거부합니다. 마지막 수신 시간이 10초 경과하면 offline으로 판단합니다. 이 서버의 offline 판정은 라즈베리파이 자체 모드 전환을 보장하지 않습니다.
+측정값은 각각 null이거나 생략될 수 있습니다. 최신값과 sensor.update는 누락 항목을 null로 전달합니다. 이력은 항목별로 측정된 값만 평균 내며, 구간 전체가 누락된 항목은 null입니다. 다른 필드가 잘못된 메시지도 거부합니다. 마지막 수신 시간이 10초 경과하면 offline으로 판단합니다. 이 서버의 offline 판정은 라즈베리파이 자체 모드 전환을 보장하지 않습니다.
 
 프론트 기기 ID ↔ 엣지 actuator: window-1 ↔ window, purifier-1 ↔ air_purifier, door-1 ↔ door, dehumidifier-1 ↔ dehumidifier(현재 Edge 미등록). 현관문은 CLOSE만 허용합니다.
 

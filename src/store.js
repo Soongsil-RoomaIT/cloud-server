@@ -10,6 +10,15 @@ function windowFor(range, now) {
   const end = (Math.floor(now / (bucket * 1000)) + 1) * bucket * 1000;
   return { start: end - seconds * 1000, end: now, bucket };
 }
+function averageMetric(rows, key) {
+  let sum = 0, count = 0;
+  for (const row of rows) {
+    if (row[key] == null) continue;
+    sum += row[key];
+    count++;
+  }
+  return count ? sum / count : null;
+}
 class MemoryStore {
   constructor() { this.readings = new Map(); this.state = null; }
   async init() {}
@@ -36,7 +45,7 @@ class MemoryStore {
     }
     return { range, bucketSeconds: bucket, points: [...groups].sort((a,b) => a[0]-b[0]).map(([time, rows]) => ({
       measuredAt: new Date(time).toISOString(),
-      ...Object.fromEntries(metrics.map(key => [key, rows.reduce((sum, r) => sum + r[key], 0) / rows.length])),
+      ...Object.fromEntries(metrics.map(key => [key, averageMetric(rows, key)])),
     })) };
   }
   async close() {}
@@ -52,7 +61,7 @@ class PostgresStore {
     const result = await this.pool.query('INSERT INTO sensor_readings VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING measured_at', [r.measuredAt, ...metrics.map(k => r[k])]);
     return result.rows.length > 0;
   }
-  row(r) { return { measuredAt: new Date(r.measured_at).toISOString(), ...Object.fromEntries(metrics.map(k => [k, Number(r[k])])) }; }
+  row(r) { return { measuredAt: new Date(r.measured_at).toISOString(), ...Object.fromEntries(metrics.map(k => [k, r[k] == null ? null : Number(r[k])])) }; }
   async latest() { const r = (await this.pool.query('SELECT * FROM sensor_readings ORDER BY measured_at DESC LIMIT 1')).rows[0]; return r ? this.row(r) : null; }
   async history(range, now = Date.now()) {
     const { start, end, bucket } = windowFor(range, now);
