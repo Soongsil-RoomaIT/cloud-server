@@ -66,6 +66,49 @@ test('fresh live-like server reports no readings and no online edge rather than 
   assert.deepEqual((await(await fetch(r.url+'/api/sensors/history?range=1h')).json()).points,[]);
 });
 
+test('device list and realtime report confirmed sources and only the edge door schedule', async t => {
+  const runtime = await fixture(t, { transport: { start: async () => {}, close: async () => {}, ready: () => false } });
+  const devices = async () => (await fetch(runtime.url + '/api/devices')).json();
+  const initial = await devices();
+  for (const device of initial) {
+    assert.equal(device.state, 'UNKNOWN');
+    assert.equal(device.stateSource, 'ASSUMED');
+    assert.ok(Math.abs(Date.now() - Date.parse(device.updatedAt)) < 5000);
+  }
+
+  const socket = new WebSocket(runtime.url.replace('http:', 'ws:') + '/ws');
+  t.after(() => socket.terminate());
+  const updates = messages(socket);
+  await waitFor(() => updates.some(msg => msg.type === 'edge.status'));
+
+  const now = Date.now() - 1000;
+  const report = (id, state, at, other = {}) => runtime.service.ingest('devices', {
+    id, state, updatedAt: new Date(at).toISOString(), ...other,
+  });
+  await report('window-1', 'CLOSED', now);
+  await report('dehumidifier-1', 'OFF', now);
+  await report('purifier-1', 'ON', now, { stateSource: 'COMMANDED' });
+  await report('door-1', 'OPEN', now);
+  const select = (rows, id) => rows.find(row => row.id === id);
+  const reported = await devices();
+  assert.equal(select(reported, 'window-1').stateSource, 'COMMANDED');
+  assert.equal(select(reported, 'dehumidifier-1').stateSource, 'ASSUMED');
+  assert.equal(select(reported, 'purifier-1').stateSource, 'COMMANDED');
+  assert.equal(select(reported, 'door-1').stateSource, 'SENSOR');
+  await runtime.service.updateSettings({ ...runtime.service.state.settings, enabled: true, mode: 'AUTO' });
+  assert.equal(select(await devices(), 'door-1').autoCloseAt, null);
+
+  const deadline = new Date(now + 600000).toISOString();
+  await report('door-1', 'OPEN', now + 10, { autoCloseAt: deadline });
+  const event = () => updates.find(msg => msg.type === 'device.state' && msg.payload.autoCloseAt === deadline);
+  await waitFor(event);
+  assert.deepEqual(event().payload, select(await devices(), 'door-1'));
+  assert.equal(runtime.service.proposals(now + 601000).some(p => p.deviceId === 'door-1'), false);
+  await report('door-1', 'CLOSED', now + 20);
+  await report('door-1', 'OPEN', now + 11, { autoCloseAt: deadline });
+  assert.equal(select(await devices(), 'door-1').autoCloseAt, null);
+});
+
 test('demo serves the indoor model waiting state and still lists decisions for approval', async t => {
   const runtime = await fixture(t);
   const response = await fetch(runtime.url + '/api/forecast');

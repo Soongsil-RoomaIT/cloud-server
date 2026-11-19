@@ -8,6 +8,18 @@ function unix(value) {
   return new Date(value * 1000).toISOString();
 }
 
+const doorScheduleType = 'door_auto_close_scheduled';
+
+function scheduledClose(detail, occurredAt) {
+  const value = Object.hasOwn(detail, 'autoCloseAt') ? detail.autoCloseAt : detail.auto_close_at;
+  if (value === null) return null;
+  const ms = typeof value === 'number' ? value * 1000 : Date.parse(v.timestamp.parse(value));
+  if (!Number.isFinite(ms) || ms < Date.parse(occurredAt) || ms > 8.64e15) {
+    throw new v.ApiError(400, '현관문 자동 닫기 예약 시각이 올바르지 않습니다.');
+  }
+  return new Date(ms).toISOString();
+}
+
 function commandForEdge(command) {
   if (!names[command.deviceId]) throw new Error('Unsupported actuator');
   // New fields are ignored by today's edge. It must implement expiration and
@@ -55,6 +67,8 @@ function handleLegacy(service, kind, payload, packet = {}) {
         state.offlineSince = null;
       }
       state.legacy.offlineSince=null;
+    } else if (event.type === doorScheduleType) {
+      service.reportDoorSchedule(at, scheduledClose(detail, at));
     } else if (['door_opened','door_closed'].includes(event.type)) {
       const target=event.type==='door_opened'?'OPEN':'CLOSED';service.applyDevice(service.device('door-1'),target,at);
       const c=state.commands.find(c=>c.deviceId==='door-1'&&c.status==='PENDING'&&c.action==='CLOSE'&&at>=c.createdAt&&at<=c.expiresAt);
@@ -75,4 +89,4 @@ function handleLegacy(service, kind, payload, packet = {}) {
   });
 }
 
-module.exports={handleLegacy,commandForEdge};
+module.exports = { handleLegacy, commandForEdge, doorScheduleType };

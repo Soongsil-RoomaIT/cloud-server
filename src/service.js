@@ -7,12 +7,12 @@ const { ruleKeys, ruleEnabled, metadata, automationView, automationUpdate } = re
 const defaults = { enabled: false, mode: 'APPROVAL', humidityOn: 65, humidityOff: 55, co2Open: 1000, pm25On: 35, rainProbability: 60 };
 const additionalThresholds = { temperatureHigh: 28, pm10Bad: 80 };
 function initialState() {
-  const updatedAt = '1970-01-01T00:00:00.000Z';
+  const updatedAt = new Date().toISOString();
   return { devices: [
-    { id: 'window-1', type: 'WINDOW', name: '창문', state: 'CLOSED', updatedAt, actions: ['OPEN','CLOSE'], stateSource: 'ASSUMED' },
-    { id: 'dehumidifier-1', type: 'DEHUMIDIFIER', name: '제습기', state: 'OFF', updatedAt, actions: ['ON','OFF'], stateSource: 'ASSUMED' },
-    { id: 'purifier-1', type: 'AIR_PURIFIER', name: '공기청정기', state: 'OFF', updatedAt, actions: ['ON','OFF'], stateSource: 'ASSUMED' },
-    { id: 'door-1', type: 'FRONT_DOOR', name: '현관문', state: 'CLOSED', updatedAt, actions: ['CLOSE'], stateSource: 'ASSUMED', autoCloseAt: null },
+    { id: 'window-1', type: 'WINDOW', name: '창문', state: 'UNKNOWN', updatedAt, actions: ['OPEN','CLOSE'], stateSource: 'ASSUMED' },
+    { id: 'dehumidifier-1', type: 'DEHUMIDIFIER', name: '제습기', state: 'UNKNOWN', updatedAt, actions: ['ON','OFF'], stateSource: 'ASSUMED' },
+    { id: 'purifier-1', type: 'AIR_PURIFIER', name: '공기청정기', state: 'UNKNOWN', updatedAt, actions: ['ON','OFF'], stateSource: 'ASSUMED' },
+    { id: 'door-1', type: 'FRONT_DOOR', name: '현관문', state: 'UNKNOWN', updatedAt, actions: ['CLOSE'], stateSource: 'ASSUMED', autoCloseAt: null },
   ], confirmedDevices: [], edge: { online: false, offlineMode: false, lastSeenAt: '1970-01-01T00:00:00.000Z' },
     offlineSince: null, pendingRecovery: null, recoveryReported: false, recoveries: [], commands: [], idempotency: {}, decisions: [], notifications: [], settings: { ...defaults, ...additionalThresholds }, automationMeta: metadata(), manualUntil: {}, doorOpenedAt: null, legacy: { seen: [], localActions: [], offlineSince: null } };
 }
@@ -29,6 +29,16 @@ class RoomService extends EventEmitter {
     this.state.thresholdSamples ??= {};
     this.state.appliedThresholds ??= {};
     this.state.confirmedDevices = [];
+    const startedAt = new Date().toISOString();
+    for (const device of this.state.devices) {
+      if (device.state === 'UNKNOWN' || !Number.isFinite(Date.parse(device.updatedAt)) || Date.parse(device.updatedAt) <= 0) {
+        device.state = 'UNKNOWN';
+        device.stateSource = 'ASSUMED';
+        device.updatedAt = startedAt;
+      }
+    }
+    this.state.doorSchedule = null;
+    this.device('door-1').autoCloseAt = null;
     this.state.idempotency ||= {}; this.state.legacy ||= { seen: [], localActions: [], offlineSince: null };
     if (!this.config.demo && this.config.mqttProtocol === 'edge-agent') this.device('dehumidifier-1').actions = [];
     if (this.state.edge.online) {
@@ -115,7 +125,14 @@ class RoomService extends EventEmitter {
     if (!this.state.edge.online) return;
     this.state.edge.online = false; this.state.offlineSince = new Date(now).toISOString();
     this.state.pendingRecovery = null; this.state.recoveryReported = false;
-    this.state.confirmedDevices = []; this.event('edge.status', this.state.edge);
+    this.state.confirmedDevices = [];
+    this.state.doorSchedule = null;
+    const door = this.device('door-1');
+    if (door.autoCloseAt !== null) {
+      door.autoCloseAt = null;
+      this.event('device.state', door);
+    }
+    this.event('edge.status', this.state.edge);
   }
   async ingest(kind, payload) {
     return this.run(async () => {
@@ -132,9 +149,12 @@ class RoomService extends EventEmitter {
         else { this.state.edge.offlineMode = s.offlineMode; this.offline(now); }
       } else if (kind === 'devices') {
         const update = v.deviceUpdate.parse(payload); const d = this.device(update.id);
-        if (!v.validState(d, update.state) || Date.parse(update.updatedAt) > now + 30000) throw new v.ApiError(400, '올바르지 않은 기기 상태입니다.');
+        if (!v.validState(d, update.state) || Date.parse(update.updatedAt) > now + 30000 ||
+            (update.autoCloseAt !== undefined && d.type !== 'FRONT_DOOR')) {
+          throw new v.ApiError(400, '올바르지 않은 기기 상태입니다.');
+        }
         this.touch(undefined, now);
-        this.applyDevice(d, update.state, update.updatedAt);
+        this.applyDevice(d, update.state, update.updatedAt, update);
       } else if (kind === 'ack') {
         const ack = v.ack.parse(payload); const c = this.state.commands.find(c => c.id === ack.commandId);
         if (!c) throw new v.ApiError(400, '알 수 없는 명령입니다.');
@@ -142,7 +162,7 @@ class RoomService extends EventEmitter {
         this.touch(undefined, now);
         if (ack.status === 'EXECUTED' && ack.executedAt > c.expiresAt) throw new v.ApiError(400, '만료된 명령의 실행 확인입니다. 별도 기기 상태를 보고하세요.');
         if (c.status === 'PENDING') {
-          this.finish(c, ack.status, ack.reason, ack.executedAt);
+          this.finish(c, ack.status, ack.reason, ack.executedAt, ack.stateSource);
           if (ack.status === 'EXECUTED' && c.thresholdObservation) {
             await collectRecommendation(this, c.thresholdObservation);
           }
@@ -164,28 +184,52 @@ class RoomService extends EventEmitter {
       this.evaluate(now);
     });
   }
-  applyDevice(d, state, at) {
-    // Initial device values are placeholders until the first real report after startup.
-    const confirmed = this.state.confirmedDevices.includes(d.id);
-    if (at < d.updatedAt) return;
-    if (!confirmed) this.state.confirmedDevices.push(d.id);
-    const wasOpen = d.state === 'OPEN';
-    d.state = state; d.updatedAt = at;
-    if (d.type === 'FRONT_DOOR') {
-      if (state === 'OPEN' && (!wasOpen || !this.state.doorOpenedAt)) this.state.doorOpenedAt = at;
-      if (state === 'CLOSED') this.state.doorOpenedAt = null;
-      d.stateSource = 'SENSOR';
-      d.autoCloseAt = state === 'OPEN' && this.state.settings.enabled && this.state.settings.mode === 'AUTO' ? new Date(Date.parse(this.state.doorOpenedAt) + 600000).toISOString() : null;
+  applyDevice(device, state, at, { stateSource, autoCloseAt } = {}) {
+    if (device.state !== 'UNKNOWN' && at < device.updatedAt) return;
+    if (!this.state.confirmedDevices.includes(device.id)) this.state.confirmedDevices.push(device.id);
+    const wasOpen = device.state === 'OPEN';
+    device.state = state;
+    device.updatedAt = at;
+    const defaultSource = { FRONT_DOOR: 'SENSOR', WINDOW: 'COMMANDED' }[device.type] ?? 'ASSUMED';
+    device.stateSource = stateSource ?? defaultSource;
+    if (device.type === 'FRONT_DOOR') {
+      const schedule = this.state.doorSchedule;
+      if (state === 'OPEN') {
+        if (!wasOpen || !this.state.doorOpenedAt) this.state.doorOpenedAt = at;
+        // A delayed OPEN snapshot can precede a schedule report already received.
+        if (autoCloseAt !== undefined && (!schedule || at >= schedule.reportedAt)) {
+          this.state.doorSchedule = { reportedAt: at, autoCloseAt };
+        }
+      } else {
+        this.state.doorOpenedAt = null;
+        if (schedule && at >= schedule.reportedAt) this.state.doorSchedule = null;
+      }
+      device.autoCloseAt = state === 'OPEN' ? this.state.doorSchedule?.autoCloseAt ?? null : null;
     }
-    this.event('device.state', d);
+    this.event('device.state', device);
   }
-  finish(c, status, reason, at = new Date().toISOString()) {
+  reportDoorSchedule(reportedAt, autoCloseAt) {
+    const door = this.device('door-1');
+    const previous = this.state.doorSchedule;
+    if ((previous && reportedAt < previous.reportedAt) ||
+        (door.state === 'CLOSED' && reportedAt <= door.updatedAt) ||
+        (door.state === 'OPEN' && reportedAt < this.state.doorOpenedAt)) return;
+    this.state.doorSchedule = { reportedAt, autoCloseAt };
+    if (door.state === 'OPEN' && door.autoCloseAt !== autoCloseAt) {
+      door.autoCloseAt = autoCloseAt;
+      this.event('device.state', door);
+    }
+  }
+  finish(c, status, reason, at = new Date().toISOString(), stateSource) {
     c.status = status; c.reason = reason; c.completedAt = at;
-    if (status === 'EXECUTED') this.applyDevice(this.device(c.deviceId), v.stateFor(c.action), at);
+    const device = this.device(c.deviceId);
+    if (status === 'EXECUTED') {
+      const source = stateSource ?? (device.state !== 'UNKNOWN' ? device.stateSource : undefined);
+      this.applyDevice(device, v.stateFor(c.action), at, { stateSource: source });
+    }
     const decision = this.state.decisions.find(d => d.commandId === c.id);
     if (decision) decision.status = status;
     this.event('command.ack', { commandId: c.id, deviceId: c.deviceId, status, reason, ...(status === 'EXECUTED' ? { device: this.device(c.deviceId) } : {}) });
-    const device = this.device(c.deviceId);
     const title = `${device.name} ${status === 'EXECUTED' ? '동작 완료' : '동작 실패'}`;
     this.notify(`${device.name}: ${status === 'EXECUTED' ? '동작 완료' : '동작 실패'} — ${reason}`, {
       title, type: c.source === 'PREDICTION' ? 'prediction.command' : 'device.command', commandId: c.id,
@@ -255,16 +299,14 @@ class RoomService extends EventEmitter {
       if (this.state.settings[key] !== next[key]) this.state.appliedThresholds[metric] = [];
     }
     this.state.settings = next;
-    const door = this.device('door-1');
-    const scheduled = door.state === 'OPEN' && this.state.doorOpenedAt && next.enabled && next.mode === 'AUTO';
-    door.autoCloseAt = scheduled ? new Date(Date.parse(this.state.doorOpenedAt) + 600000).toISOString() : null;
-    this.event('device.state', door);
     this.evaluate();
   }
   proposals(now) {
     const s = this.state.settings, r = this.latest, items = [];
     const add = (deviceId, action, factor, value, threshold) => items.push({ deviceId, action, reasons: [{ factor, value, threshold }] });
-    if (this.state.doorOpenedAt && now - Date.parse(this.state.doorOpenedAt) >= 10 * 60000) add('door-1', 'CLOSE', '현관문 열림', '10분 이상', '10분');
+    if (this.state.doorOpenedAt && !this.state.doorSchedule?.autoCloseAt && now - Date.parse(this.state.doorOpenedAt) >= 10 * 60000) {
+      add('door-1', 'CLOSE', '현관문 열림', '10분 이상', '10분');
+    }
     const fresh = r && now - Date.parse(r.measuredAt) <= 15000;
     const active = id => ruleEnabled(this.state, id);
     if (fresh && r.humidity != null) {

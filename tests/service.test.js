@@ -11,7 +11,10 @@ async function fixture() {
   const s = new RoomService(store, config, weather); await s.init();
   const sent = []; s.transport = { ready: () => true, send: async c => sent.push(c) };
   await s.ingest('status', { online: true, offlineMode: false });
-  for (const d of s.state.devices) await s.ingest('devices', { id: d.id, state: d.state, updatedAt: new Date().toISOString() });
+  for (const d of s.state.devices) {
+    const state = ['WINDOW', 'FRONT_DOOR'].includes(d.type) ? 'CLOSED' : 'OFF';
+    await s.ingest('devices', { id: d.id, state, updatedAt: new Date().toISOString() });
+  }
   return { s, store, sent };
 }
 test('readings validate numbers, timezone and physical ranges, reject future timestamps', async () => {

@@ -1,5 +1,5 @@
 const mqtt = require('mqtt');
-const { handleLegacy, commandForEdge } = require('./edge-agent-adapter');
+const { handleLegacy, commandForEdge, doorScheduleType } = require('./edge-agent-adapter');
 
 class DemoTransport {
   constructor(service) { this.service = service; this.connected = false; this.paused = false; this.timers = new Set(); }
@@ -7,7 +7,11 @@ class DemoTransport {
   async start() {
     this.connected = true;
     await this.service.ingest('status', { online: true, offlineMode: false });
-    for (const d of this.service.state.devices) await this.service.ingest('devices', { id: d.id, state: d.state, updatedAt: new Date().toISOString() });
+    for (const device of this.service.state.devices) {
+      const state = ['WINDOW', 'FRONT_DOOR'].includes(device.type) ? 'CLOSED' : 'OFF';
+      const stateSource = device.type === 'FRONT_DOOR' ? 'SENSOR' : 'COMMANDED';
+      await this.service.ingest('devices', { id: device.id, state, stateSource, updatedAt: new Date().toISOString() });
+    }
     if (!this.service.config.databaseUrl && !(await this.service.store.latest())) {
       const now = Date.now();
       for (let i = 359; i >= 1; i--) {
@@ -41,7 +45,7 @@ class MqttTransport {
     this.client = mqtt.connect(c.mqttUrl, { username: c.mqttUsername || undefined, password: c.mqttPassword || undefined,
       clientId: `roomait-cloud-${process.pid}`, reconnectPeriod: 2000, connectTimeout: 5000, clean: true, queueQoSZero: false });
     this.client.on('connect', () => {
-      const suffixes=c.mqttProtocol==='edge-agent'?['telemetry','events','status']:['sensors','devices','status','ack','recovery'];
+      const suffixes=c.mqttProtocol==='edge-agent'?['telemetry','events','status']:['sensors','devices','status','ack','recovery','events'];
       this.client.subscribe(suffixes.map(s => `${c.mqttPrefix}/${s}`), { qos: 1 }, (error, granted) => {
         this.subscribed = !error && granted?.every(g => g.qos !== 128);
         if (!this.subscribed) this.service.lastError = 'MQTT 구독 실패';
@@ -54,6 +58,12 @@ class MqttTransport {
       try { payload = c.mqttProtocol==='edge-agent'&&kind==='status'?raw.toString():JSON.parse(raw.toString()); } catch { this.rejectedMessages++; return; }
       if(c.mqttProtocol==='edge-agent') {
         handleLegacy(this.service,kind,payload,packet).catch(()=>{this.rejectedMessages++;});return;
+      }
+      if (kind === 'events') {
+        if (payload?.type === doorScheduleType) {
+          handleLegacy(this.service, kind, payload, packet).catch(() => { this.rejectedMessages++; });
+        }
+        return;
       }
       if (packet.retain && !(kind === 'status' && payload?.online === false)) return;
       this.service.ingest(kind, payload).catch(() => { this.rejectedMessages++; });

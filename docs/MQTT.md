@@ -24,11 +24,14 @@
 | suffix | 방향 | payload |
 |---|---|---|
 | sensors | Edge→Cloud | `{measuredAt, temperature, humidity, co2, pm25, pm10}` |
-| devices | Edge→Cloud | `{id, state, updatedAt}` |
+| devices | Edge→Cloud | `{id, state, updatedAt, stateSource?, autoCloseAt?}` |
 | status | Edge→Cloud | `{online, offlineMode}` |
 | recovery | Edge→Cloud | `{offlineSince, recoveredAt, localActions:[{executedAt,deviceId,state,reason}]}` |
-| ack | Edge→Cloud | `{commandId,status:"EXECUTED"\|"FAILED",reason,executedAt}` |
+| ack | Edge→Cloud | `{commandId,status:"EXECUTED"\|"FAILED",reason,executedAt,stateSource?}` |
+| events | Edge→Cloud | 확장 계약에서는 `door_auto_close_scheduled`만 처리 |
 | commands | Cloud→Edge | `{commandId,deviceId,action,reason,issuedAt,expiresAt}` |
+
+두 MQTT 모드에서 현관문 예약 이벤트는 `{occurredAt, type:"door_auto_close_scheduled", detail:{autoCloseAt}}` 형식입니다. `occurredAt`은 Unix 초이고 `detail.autoCloseAt`은 Unix 초 또는 ISO 시각입니다. 예약을 취소하면 `null`을 보냅니다. `devices`에서 현관문만 선택 필드 `autoCloseAt`에 ISO 시각 또는 `null`을 보낼 수 있습니다. 조회와 WebSocket은 UTC ISO 시각을 반환합니다.
 
 확장 명령은 QoS1·retain=false입니다. Edge가 commandId를 영속 중복 차단하고 expiresAt을 검사해야 합니다. 연결 시작 시 상태/기기 스냅샷을 non-retained로 재발행하고 센서 또는 상태 신호를 5초 이내 주기로 보내세요. LWT status는 `{online:false,offlineMode:true}`를 retained로 지정할 수 있습니다. retained 과거 데이터는 실시간 생존으로 처리하지 않습니다.
 

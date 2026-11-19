@@ -67,7 +67,7 @@ npm start
 
 팀 저장소 비교 및 담당별 연결 항목은 [TEAM_INTEGRATION.md](docs/TEAM_INTEGRATION.md), 엣지 토픽과 메시지는 [MQTT.md](docs/MQTT.md), 데이터 구조는 [DATA_MODEL.md](docs/DATA_MODEL.md), 요구사항별 확인 범위는 [ACCEPTANCE.md](docs/ACCEPTANCE.md)에 정리했습니다.
 
-기존 엣지는 액추에이터 `set()` 호출 성공을 `remote_command`로 발행하지만, 하드웨어 드라이버의 `set()`은 비동기 동작 수락입니다. 따라서 그 이벤트를 실제 완료 ACK로 바꾸지 않습니다. 창문·가전의 완료 피드백, commandId·만료 처리, 제습기 등록이 엣지에 추가되어야 실제 장비 전체 제어가 완성됩니다. 초기 기기 상태는 `ASSUMED`, 미수신 시각은 Unix epoch이며 `/health.devicesConfirmed`로 확인된 기기를 구분합니다.
+기존 엣지는 액추에이터 `set()` 호출 성공을 `remote_command`로 발행하지만, 하드웨어 드라이버의 `set()`은 비동기 동작 수락입니다. 따라서 그 이벤트를 실제 완료 ACK로 바꾸지 않습니다. 창문·가전의 완료 피드백, commandId·만료 처리, 제습기 등록이 엣지에 추가되어야 실제 장비 전체 제어가 완성됩니다. 처음부터 확인된 상태가 없는 기기는 서버 시작 시각과 `UNKNOWN` / `ASSUMED`를 반환합니다. 기기 상태를 받은 뒤 기본 출처는 창문 `COMMANDED`, 현관문 `SENSOR`, 버튼 서보 가전 `ASSUMED`입니다. 엣지가 LED 대체 가전에 `COMMANDED`를 명시하면 그대로 전달합니다. 현관문 카운트다운은 엣지가 보고한 예약 시각을 사용합니다.
 
 로그인·JWT 발급·FCM 발송은 팀 `backend/minjae` 담당 기능입니다. 이 서버는 Keycloak JWT 검증·단일 공간 사용자 허용 목록과 Gateway 내부 알림 API 연결를 제공합니다. 기본 알림 목록/WS 알림은 **브라우저가 꺼져 있을 때의 FCM push가 아닙니다**. 실제 푸시 자격 증명이나 타인에게 알림 전송을 설정하지 않았습니다.
 

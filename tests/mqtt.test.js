@@ -32,8 +32,19 @@ test('team edge MQTT telemetry/status/events and command format work through a r
  const result=await s.requestCommand('window-1',{action:'OPEN'},'mqtt-test-key');await until(()=>received);
  assert.equal(received.actuator,'window');assert.equal(received.on,true);assert.equal(received.commandId,result.commandId);
  await edge.publishAsync(config.mqttPrefix+'/events',JSON.stringify({occurredAt:Date.now()/1000,type:'remote_command',detail:{actuator:'window',on:true}}),{qos:1});
- await until(()=>s.state.commands[0].acceptedAt);assert.equal(s.state.commands[0].status,'PENDING');assert.equal(s.device('window-1').state,'CLOSED');
+ await until(()=>s.state.commands[0].acceptedAt);assert.equal(s.state.commands[0].status,'PENDING');assert.equal(s.device('window-1').state,'UNKNOWN');
+ const occurredAt = Date.now()/1000;
+ await edge.publishAsync(config.mqttPrefix+'/events', JSON.stringify({occurredAt, type:'door_opened', detail:{initial:true}}), {qos:1});
+ await until(() => s.device('door-1').state === 'OPEN');
+ assert.equal(s.device('door-1').stateSource, 'SENSOR');
+ assert.equal(s.device('door-1').autoCloseAt, null);
+ const deadline = new Date((occurredAt + 600)*1000).toISOString();
+ await edge.publishAsync(config.mqttPrefix+'/events', JSON.stringify({
+   occurredAt, type:'door_auto_close_scheduled', detail:{autoCloseAt:deadline},
+ }), {qos:1});
+ await until(() => s.device('door-1').autoCloseAt === deadline);
  await edge.publishAsync(config.mqttPrefix+'/status','offline',{qos:1,retain:true});await until(()=>!s.state.edge.online);
+ assert.equal(s.device('door-1').autoCloseAt, null);
 });
 test('legacy accepts partial readings; backlog events deduplicate without inventing execution',async()=>{
  const {s}=await room();
