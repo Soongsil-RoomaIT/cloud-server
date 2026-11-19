@@ -22,6 +22,8 @@ const settings = z.object({
   humidityOn: z.number().min(30).max(95), humidityOff: z.number().min(20).max(90),
   co2Open: z.number().min(400).max(5000), pm25On: z.number().min(1).max(500),
   rainProbability: z.number().min(0).max(100),
+  temperatureHigh: z.number().min(15).max(40).optional(),
+  pm10Bad: z.number().min(1).max(1000).optional(),
 }).strict().refine(s => s.humidityOff < s.humidityOn, 'humidityOff must be below humidityOn');
 
 class ApiError extends Error {

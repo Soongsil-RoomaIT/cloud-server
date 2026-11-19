@@ -2,6 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {PGlite}=require('@electric-sql/pglite');
 const {MemoryStore,PostgresStore}=require('../src/store');
+const { RoomService, initialState } = require('../src/service');
 
 test('PostgreSQL schema, upsert, chronological latest, bucket averaging and state reload',async t=>{
   const db=new PGlite();t.after(()=>db.close());
@@ -30,4 +31,23 @@ test('PostgreSQL schema, upsert, chronological latest, bucket averaging and stat
   await store.save({settings:{enabled:true},commands:[{id:'test',status:'PENDING'}]});
   const restored=new PostgresStore('',pool);assert.equal((await restored.load()).settings.enabled,true);
   await restored.save({settings:{enabled:false}});assert.equal((await store.load()).settings.enabled,false);
+
+  // A pre-automation room_state still carries the user's thresholds on startup.
+  const legacy = initialState();
+  legacy.settings.humidityOn = 73;
+  delete legacy.automationMeta;
+  delete legacy.settings.pm10Bad;
+  await db.query("DELETE FROM automation");
+  await db.query("UPDATE room_state SET payload=$1::jsonb WHERE id='room-1'", [JSON.stringify(legacy)]);
+  const weather = { current: () => ({ weather: [] }) };
+  const service = new RoomService(store, { demo: true }, weather);
+  await service.init();
+  assert.equal((await service.automation()).rules.find(rule => rule.id === 'humidityHigh').threshold, 73);
+  await service.updateAutomation({ rules: [{ id: 'pm10Bad', threshold: 81, enabled: true, label: '외기 PM10' }] });
+  const persisted = (await db.query("SELECT settings,metadata FROM automation WHERE id='room-1'")).rows[0];
+  assert.equal(persisted.settings.pm10Bad, 81);
+  assert.equal(persisted.metadata.rules.pm10Bad.enabled, true);
+  const restarted = new RoomService(restored, { demo: true }, weather);
+  await restarted.init();
+  assert.deepEqual(await restarted.automation(), await service.automation());
 });

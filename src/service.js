@@ -1,9 +1,11 @@
 const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const v = require('./validation');
-const { ruleKeys, manualObservation, collectRecommendation } = require('./recommendations');
+const { manualObservation, collectRecommendation } = require('./recommendations');
+const { ruleKeys, ruleEnabled, metadata, automationView, automationUpdate } = require('./automation');
 
 const defaults = { enabled: false, mode: 'APPROVAL', humidityOn: 65, humidityOff: 55, co2Open: 1000, pm25On: 35, rainProbability: 60 };
+const additionalThresholds = { temperatureHigh: 28, pm10Bad: 80 };
 function initialState() {
   const updatedAt = '1970-01-01T00:00:00.000Z';
   return { devices: [
@@ -12,7 +14,7 @@ function initialState() {
     { id: 'purifier-1', type: 'AIR_PURIFIER', name: '공기청정기', state: 'OFF', updatedAt, actions: ['ON','OFF'], stateSource: 'ASSUMED' },
     { id: 'door-1', type: 'FRONT_DOOR', name: '현관문', state: 'CLOSED', updatedAt, actions: ['CLOSE'], stateSource: 'ASSUMED', autoCloseAt: null },
   ], confirmedDevices: [], edge: { online: false, offlineMode: false, lastSeenAt: '1970-01-01T00:00:00.000Z' },
-    offlineSince: null, pendingRecovery: null, recoveryReported: false, recoveries: [], commands: [], idempotency: {}, decisions: [], notifications: [], settings: { ...defaults }, manualUntil: {}, doorOpenedAt: null, legacy: { seen: [], localActions: [], offlineSince: null } };
+    offlineSince: null, pendingRecovery: null, recoveryReported: false, recoveries: [], commands: [], idempotency: {}, decisions: [], notifications: [], settings: { ...defaults, ...additionalThresholds }, automationMeta: metadata(), manualUntil: {}, doorOpenedAt: null, legacy: { seen: [], localActions: [], offlineSince: null } };
 }
 class RoomService extends EventEmitter {
   constructor(store, config, weather) {
@@ -21,6 +23,9 @@ class RoomService extends EventEmitter {
   }
   async init() {
     await this.store.init(); this.state = await this.store.load() || this.state; this.latest = await this.store.latest();
+    this.state.settings = { ...defaults, ...additionalThresholds, ...this.state.settings };
+    const storedMeta = this.state.automationMeta ?? {};
+    this.state.automationMeta = { ...metadata(), ...storedMeta };
     this.state.thresholdSamples ??= {};
     this.state.appliedThresholds ??= {};
     this.state.confirmedDevices = [];
@@ -196,31 +201,79 @@ class RoomService extends EventEmitter {
       return response;
     });
   }
-  updateSettings(body) { const next = v.settings.parse(body); return this.run(() => {
+  async automation() {
+    await this.tail;
+    return automationView(this.state);
+  }
+  updateAutomation(body) {
+    return this.run(() => {
+      const update = automationUpdate(this.state, body);
+      this.state.automationMeta = update.automationMeta;
+      this.applySettings(update.settings);
+      return body;
+    });
+  }
+  legacySettings() {
+    const { temperatureHigh, pm10Bad, ...settings } = this.state.settings;
+    return settings;
+  }
+  updateSettings(body) {
+    const update = v.settings.parse(body);
+    return this.run(() => {
+      this.applySettings({ ...this.state.settings, ...update });
+      return this.legacySettings();
+    });
+  }
+  applySettings(next) {
     for (const [metric, key] of Object.entries(ruleKeys)) {
       if (this.state.settings[key] !== next[key]) this.state.appliedThresholds[metric] = [];
     }
     this.state.settings = next;
-    const d = this.device('door-1'); d.autoCloseAt = d.state === 'OPEN' && this.state.doorOpenedAt && next.enabled && next.mode === 'AUTO' ? new Date(Date.parse(this.state.doorOpenedAt)+600000).toISOString() : null;
-    this.event('device.state', d); this.evaluate(); return next;
-  }); }
+    const door = this.device('door-1');
+    const scheduled = door.state === 'OPEN' && this.state.doorOpenedAt && next.enabled && next.mode === 'AUTO';
+    door.autoCloseAt = scheduled ? new Date(Date.parse(this.state.doorOpenedAt) + 600000).toISOString() : null;
+    this.event('device.state', door);
+    this.evaluate();
+  }
   proposals(now) {
     const s = this.state.settings, r = this.latest, items = [];
     const add = (deviceId, action, factor, value, threshold) => items.push({ deviceId, action, reasons: [{ factor, value, threshold }] });
     if (this.state.doorOpenedAt && now - Date.parse(this.state.doorOpenedAt) >= 10 * 60000) add('door-1', 'CLOSE', '현관문 열림', '10분 이상', '10분');
     const fresh = r && now - Date.parse(r.measuredAt) <= 15000;
+    const active = id => ruleEnabled(this.state, id);
     if (fresh && r.humidity != null) {
-      if (r.humidity >= s.humidityOn) add('dehumidifier-1', 'ON', '실내 습도', `${r.humidity}%`, `${s.humidityOn}% 이상`);
-      else if (r.humidity <= s.humidityOff) add('dehumidifier-1', 'OFF', '실내 습도', `${r.humidity}%`, `${s.humidityOff}% 이하`);
+      if (active('humidityHigh') && r.humidity >= s.humidityOn) add('dehumidifier-1', 'ON', '실내 습도', `${r.humidity}%`, `${s.humidityOn}% 이상`);
+      else if (active('humidityLow') && r.humidity <= s.humidityOff) add('dehumidifier-1', 'OFF', '실내 습도', `${r.humidity}%`, `${s.humidityOff}% 이하`);
     }
-    if (fresh && r.pm25 != null) {
+    const weather = this.weather.current().weather.filter(w => Date.parse(w.time) >= now - 3600000 && Date.parse(w.time) <= now + 2 * 3600000);
+    const air = this.weather.airQuality?.(now);
+    const dustRules = [
+      { enabled: active('pm25Bad'), samples: air ? [air.pm25] : weather.map(w => w.pm25), threshold: s.pm25On, label: '실외 초미세먼지' },
+      { enabled: active('pm10Bad'), samples: [air?.pm10], threshold: s.pm10Bad, label: '실외 미세먼지' },
+    ].filter(rule => rule.enabled);
+    const dirty = dustRules.find(rule => rule.samples.some(sample => Number.isFinite(sample) && sample >= rule.threshold));
+    if (dirty) {
+      add('purifier-1', 'ON', dirty.label, '높음', `${dirty.threshold} 이상`);
+    } else if (active('pm25Bad') && fresh && r.pm25 != null) {
       if (r.pm25 >= s.pm25On) add('purifier-1', 'ON', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On} 이상`);
       else if (r.pm25 <= s.pm25On * 0.6) add('purifier-1', 'OFF', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On * 0.6} 이하`);
     }
-    const weather = this.weather.current().weather.filter(w => Date.parse(w.time) >= now - 3600000 && Date.parse(w.time) <= now + 2 * 3600000);
-    if (weather.some(w => w.precipitationProb >= s.rainProbability)) add('window-1', 'CLOSE', '강수확률', `${Math.max(...weather.map(w => w.precipitationProb))}%`, `${s.rainProbability}% 이상`);
-    else if (weather.some(w => Number.isFinite(w.pm25) && w.pm25 >= s.pm25On)) add('window-1', 'CLOSE', '실외 초미세먼지', '높음', `${s.pm25On} 이상`);
-    else if (fresh && r.co2 != null && r.co2 >= s.co2Open && weather.length && weather.every(w => Number.isFinite(w.pm25) && w.pm25 < s.pm25On && w.precipitationProb < s.rainProbability)) add('window-1', 'OPEN', '실내 CO₂', `${r.co2}ppm`, `${s.co2Open}ppm 이상`);
+    const rain = weather.map(w => w.precipitationProb);
+    const rainy = active('rainProbability') && rain.some(p => Number.isFinite(p) && p >= s.rainProbability);
+    const safeAir = dustRules.length > 0 && dustRules.every(rule =>
+      rule.samples.length > 0 && rule.samples.every(sample => Number.isFinite(sample) && sample < rule.threshold));
+    const safeRain = !active('rainProbability') || (rain.length > 0 && rain.every(p => Number.isFinite(p) && p < s.rainProbability));
+    if (rainy) {
+      add('window-1', 'CLOSE', '강수확률', `${Math.max(...rain.filter(Number.isFinite))}%`, `${s.rainProbability}% 이상`);
+    } else if (dirty) {
+      add('window-1', 'CLOSE', dirty.label, '높음', `${dirty.threshold} 이상`);
+    } else if (fresh && safeAir && safeRain) {
+      if (active('temperatureHigh') && r.temperature != null && r.temperature >= s.temperatureHigh) {
+        add('window-1', 'OPEN', '실내 온도', `${r.temperature}°C`, `${s.temperatureHigh}°C 이상`);
+      } else if (r.co2 != null && r.co2 >= s.co2Open) {
+        add('window-1', 'OPEN', '실내 CO₂', `${r.co2}ppm`, `${s.co2Open}ppm 이상`);
+      }
+    }
     return items;
   }
   evaluate(now = Date.now()) {

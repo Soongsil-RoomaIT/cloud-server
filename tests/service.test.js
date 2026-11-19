@@ -102,6 +102,29 @@ test('unknown outdoor PM blocks automatic opening, forecast rain proposes closur
   await s.ingest('devices',{id:'window-1',state:'OPEN',updatedAt:new Date().toISOString()});
   s.weather.data.weather.forEach(w=>{w.precipitationProb=80;});await s.tick();assert.equal(s.state.decisions.at(-1).action,'CLOSE');
 });
+test('automatic control uses saved rule switches and blocks ventilation without outdoor readings', async () => {
+  const {s} = await fixture();
+  await s.ingest('sensors', reading({ temperature: 31, humidity: 75, co2: null }));
+  const rules = [
+    { id: 'humidityHigh', threshold: 65, enabled: false },
+    { id: 'temperatureHigh', threshold: 30, enabled: true },
+    { id: 'pm10Bad', threshold: 80, enabled: true },
+  ];
+  await s.updateAutomation({ rules });
+  s.weather.airQuality = () => ({ pm25: 10, pm10: 40 });
+  const proposals = () => s.proposals(Date.now());
+  assert.equal(proposals().some(p => p.deviceId === 'dehumidifier-1'), false);
+  assert.equal(proposals().some(p => p.deviceId === 'window-1' && p.action === 'OPEN'), true);
+  s.weather.airQuality = () => ({ pm25: 10, pm10: null });
+  assert.equal(proposals().some(p => p.deviceId === 'window-1'), false);
+  s.weather.airQuality = () => ({ pm25: 10, pm10: 90 });
+  assert.equal(proposals().some(p => p.deviceId === 'window-1' && p.action === 'CLOSE'), true);
+  assert.equal(proposals().some(p => p.deviceId === 'purifier-1' && p.action === 'ON'), true);
+  s.weather.data.weather.forEach(row => { row.precipitationProb = 90; });
+  s.weather.airQuality = () => ({ pm25: 10, pm10: 40 });
+  assert.equal(proposals().some(p => p.deviceId === 'window-1' && p.action === 'CLOSE'), true);
+});
+
 test('storage failure rolls back state and never publishes a command', async () => {
   const {s,store,sent}=await fixture();store.save=async()=>{throw new Error('DB unavailable');};
   await assert.rejects(s.requestCommand('window-1',{action:'OPEN'}));assert.equal(s.state.commands.length,0);assert.equal(sent.length,0);

@@ -49,6 +49,7 @@ npm start
 | GET | `/api/recommendations` | 기준값 추천 이력, 첫 추천 전에는 수동 조작 수집 건수 |
 | POST | `/api/recommendations/:id/apply`, `/reject`, `/revert` | 기준값 추천 적용·거절·되돌리기. 중복 처리 시 409 |
 | POST | `/api/decisions/:id/approve`, `/reject` | 추천 승인·거절 |
+| GET, PUT | `/api/automation` | 전체 스위치, 규칙별 기준값·사용 여부 조회와 수정 |
 | GET, PUT | `/api/settings/automation` | 자동화 설정 전체 조회·저장 |
 | GET | `/api/notifications` | 웹 알림 목록 |
 | PATCH | `/api/notifications/:id/read` | 읽음 처리 |
@@ -57,6 +58,8 @@ npm start
 예측 모델이 완성되면 모델 실행 측에서 PostgreSQL의 `prediction` 테이블에 계산 시각(`generated_at`), 모델 버전(`model_version`), 예측 기반 제어 사용 여부(`control_enabled`), 지표 배열(`metrics`)을 한 행으로 저장합니다. 각 지표에는 `metric`(humidity 또는 temperature), `predicted`, `baseline`, `actual`, `mae`, `baselineMae`를 넣습니다. 미확정 수치는 null입니다. API는 가장 최근 행을 반환하고, 연결 중인 WebSocket에는 기본 15초마다 변경을 확인해 같은 형식의 `forecast.update`를 보냅니다.
 
 제습기 켜기·끄기와 공기청정기 켜기는 규칙별로 수동 조작 10건을 모읍니다. 실제 상태가 바뀌는 명령을 보낸 시점에 15초 이내의 해당 센서값이 있고 실행 완료가 확인되어야 한 건입니다. 같은 규칙의 10건에서 중앙값이 현재 기준과 다르고 설정 범위에 맞으면 새 기준값을 제안합니다. 대기 중인 동일 규칙 추천이 있으면 추가 제안은 생략합니다. 첫 추천 전 수집 건수는 가장 많이 모인 규칙 기준이며, 새 추천은 `recommendation.new`로 전송됩니다.
+
+`GET /api/automation`은 습도 상한·하한, 온도 상한, PM2.5, PM10, 강수확률 규칙을 돌려줍니다. `PUT`은 규칙 목록이나 평면 객체를 받아 같은 형식으로 응답하며, 함께 보낸 추가 필드도 저장합니다. 온도 상한(28°C)과 외기 PM10(80 µg/m³)은 기본 비활성 상태입니다. 온도 기준으로 창문을 열 때는 활성 미세먼지 규칙의 외기 측정값이 기준 미만이어야 하며, 강수 규칙이 켜져 있으면 예보도 기준 미만이어야 합니다. 활성 외기 미세먼지 기준을 넘으면 창문을 닫고 공기청정기를 켭니다.
 
 동작 완료는 실제 ACK 또는 현관문 센서 확인으로 판단합니다. 타임아웃은 기기가 움직이지 않았다는 보장이 아니라 **정해진 시간 안에 확인하지 못했다는 뜻**입니다. 명령을 자동 재전송하지 않습니다. 결정 상태에는 초안 외에 `FAILED`, `EXPIRED`가 있습니다.
 

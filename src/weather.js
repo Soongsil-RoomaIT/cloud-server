@@ -29,6 +29,12 @@ class WeatherService {
     if (!Array.isArray(items)) throw new Error('기상청 데이터 형식 오류');
     return items;
   }
+  airQuality(now) {
+    if (this.config.demo) return { pm25: this.data.weather[0]?.pm25, pm10: 28 };
+    const sample = this.air.rows.at(-1);
+    if (!sample || sample.ms > now || now - sample.ms > 3 * HOUR) return null;
+    return sample;
+  }
   outdoor(now = Date.now()) { return outdoorReport(this.data, this.publishedAt, this.air, now); }
   async refresh(now = Date.now()) {
     await Promise.all([this.refreshWeather(now), this.air.refresh(now)]);

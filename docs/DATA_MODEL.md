@@ -7,9 +7,12 @@
 | sensor_readings | measured_at timestamptz | 온도·습도·CO₂·PM2.5·PM10 수치 |
 | prediction | generated_at timestamptz | 1시간 뒤 실내 온습도 예측 한 회분(metrics JSONB), 모델 버전, 선제 제어 사용 여부 |
 | recommendation | id text | 기준값 추천 한 건과 처리 상태(payload JSONB) |
+| automation | id = room-1 | 자동제어 기준값과 규칙별 사용 여부·화면 정보 |
 | room_state | id = room-1 | payload JSONB, updated_at |
 
 room_state에는 devices, confirmedDevices, edge, settings, commands, decisions, notifications, idempotency, recovery와 Legacy 이벤트 중복 차단 기록을 함께 저장합니다. 작은 단일 세대 상태를 원자적으로 저장하기 위한 구조이며 정규화된 여러 관계 테이블로 구현했다고 주장하지 않습니다.
+
+자동제어 설정은 `automation`에 저장하며, 기존 데이터의 설정은 `room_state`에서 읽어 옮깁니다. 새 설정과 기준값 추천의 처리 결과는 같은 SQL 문으로 저장합니다.
 
 논리 관계는 다음과 같습니다.
 

@@ -79,6 +79,51 @@ test('demo serves the indoor model waiting state and still lists decisions for a
   assert.deepEqual(await decisions.json(), [...runtime.service.state.decisions].reverse());
 });
 
+test('automation round-trips both frontend shapes and validates changes before saving', async t => {
+  const runtime = await fixture(t);
+  const url = runtime.url + '/api/automation';
+  const read = async () => (await fetch(url)).json();
+  const write = body => fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const initial = await read();
+  assert.deepEqual(initial.rules.map(rule => rule.id), ['humidityHigh','humidityLow','temperatureHigh','pm25Bad','pm10Bad','rainProbability']);
+  assert.equal(initial.rules.find(rule => rule.id === 'temperatureHigh').enabled, false);
+
+  const body = {
+    enabled: true, mode: 'AUTO', screenHint: { version: 2 },
+    rules: [{ id: 'humidityHigh', metric: 'humidity', threshold: 72, enabled: false, description: '습도 상한' }],
+  };
+  const saved = await write(body);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), body);
+  assert.equal(runtime.service.state.settings.mode, 'APPROVAL');
+  const flat = { humidityLow: 52, pm25On: 36 };
+  assert.deepEqual(await (await write(flat)).json(), flat);
+  const stored = await read();
+  assert.equal(stored.enabled, true);
+  assert.deepEqual(stored.screenHint, body.screenHint);
+  assert.deepEqual(stored.rules.find(rule => rule.id === 'humidityHigh'), body.rules[0]);
+  assert.equal(stored.rules.find(rule => rule.id === 'humidityLow').threshold, 52);
+  assert.equal(stored.rules.find(rule => rule.id === 'pm25Bad').threshold, 36);
+
+  for (const bad of [{ enabled: 'true' }, { humidityHigh: 49 }, { pm10Bad: 0 }, { rules: [...body.rules, ...body.rules] }]) {
+    const error = await write(bad);
+    assert.equal(error.status, 400);
+    assert.ok((await error.json()).message);
+  }
+  assert.deepEqual(await read(), stored);
+  const legacy = await (await fetch(runtime.url + '/api/settings/automation')).json();
+  assert.equal(legacy.humidityOn, 72);
+  assert.equal(legacy.mode, 'APPROVAL');
+  assert.equal(await (await write({ rules: [{ id: 'temperatureHigh', threshold: 30, enabled: true }] })).status, 200);
+  const oldSave = await fetch(runtime.url + '/api/settings/automation', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...legacy, humidityOn: 74 }),
+  });
+  assert.equal(oldSave.status, 200);
+  const afterLegacy = await read();
+  assert.equal(afterLegacy.rules.find(rule => rule.id === 'humidityHigh').threshold, 74);
+  assert.deepEqual(afterLegacy.rules.find(rule => rule.id === 'temperatureHigh'), { id: 'temperatureHigh', metric: 'temperature', threshold: 30, enabled: true });
+});
+
 test('a stored one-hour prediction reaches REST and WebSocket with the same payload', async t => {
   const { PGlite } = require('@electric-sql/pglite');
   const { PostgresStore } = require('../src/store');

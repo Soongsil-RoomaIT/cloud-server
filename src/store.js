@@ -80,7 +80,15 @@ class PostgresStore {
       controlEnabled: row.control_enabled, modelVersion: row.model_version, message: null, metrics: row.metrics,
     };
   }
-  async load() { return (await this.pool.query("SELECT payload FROM room_state WHERE id='room-1'")).rows[0]?.payload || null; }
+  async load() {
+    const { rows } = await this.pool.query(
+      "SELECT room_state.payload, automation.settings, automation.metadata FROM room_state LEFT JOIN automation USING (id) WHERE room_state.id='room-1'"
+    );
+    const row = rows[0];
+    if (!row) return null;
+    if (!row.settings) return row.payload;
+    return { ...row.payload, settings: row.settings, automationMeta: row.metadata };
+  }
   async listRecommendations() {
     const { rows } = await this.pool.query("SELECT payload FROM recommendation ORDER BY (payload->>'createdAt')::timestamptz DESC, id DESC");
     return rows.map(row => row.payload);
@@ -88,20 +96,31 @@ class PostgresStore {
   async save(state, change) {
     const upsert = 'ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=now()';
     const params = [JSON.stringify(state)];
-    if (!change) {
-      await this.pool.query("INSERT INTO room_state(id,payload) VALUES('room-1',$1::jsonb) " + upsert, params);
-      return;
+    let recommendationWrite = '';
+    let stateSource = "VALUES ('room-1',$1::jsonb)";
+    if (change) {
+      const { record, previous } = change;
+      params.push(record.id, JSON.stringify(record));
+      let write = 'INSERT INTO recommendation(id,payload) VALUES ($2,$3::jsonb) ON CONFLICT DO NOTHING';
+      if (previous) {
+        params.push(JSON.stringify(previous));
+        write = 'UPDATE recommendation SET payload=$3::jsonb WHERE id=$2 AND payload=$4::jsonb';
+      }
+      recommendationWrite = 'changed AS (' + write + ' RETURNING id),';
+      stateSource = "SELECT 'room-1',$1::jsonb FROM changed";
     }
-    // The rule value and the recommendation status commit in one SQL statement.
-    const { record, previous } = change;
-    params.push(record.id, JSON.stringify(record));
-    let write = 'INSERT INTO recommendation(id,payload) VALUES ($2,$3::jsonb) ON CONFLICT DO NOTHING';
-    if (previous) {
-      params.push(JSON.stringify(previous));
-      write = 'UPDATE recommendation SET payload=$3::jsonb WHERE id=$2 AND payload=$4::jsonb';
-    }
-    const { rows } = await this.pool.query('WITH changed AS (' + write + ' RETURNING id) ' +
-      "INSERT INTO room_state(id,payload) SELECT 'room-1',$1::jsonb FROM changed " + upsert + ' RETURNING id', params);
+    // Commit rule edits, room state and recommendation status together.
+    const { rows } = await this.pool.query(`WITH ${recommendationWrite}
+      saved AS (
+        INSERT INTO room_state(id,payload) ${stateSource} ${upsert} RETURNING id,payload
+      ), automation_saved AS (
+        INSERT INTO automation(id,settings,metadata)
+          SELECT id, payload->'settings', COALESCE(payload->'automationMeta', '{}')
+          FROM saved WHERE payload ? 'settings'
+        ON CONFLICT(id) DO UPDATE SET settings=EXCLUDED.settings, metadata=EXCLUDED.metadata
+          WHERE (automation.settings, automation.metadata) IS DISTINCT FROM (EXCLUDED.settings, EXCLUDED.metadata)
+      )
+      SELECT id FROM saved`, params);
     if (!rows.length) throw conflict();
   }
   async insert(r) {

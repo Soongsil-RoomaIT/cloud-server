@@ -46,7 +46,9 @@ function createApp(service, config) {
   }
   app.post('/api/decisions/:id/approve', async (req,res) => res.status(202).json(await service.decide(req.params.id, true)));
   app.post('/api/decisions/:id/reject', async (req,res) => res.json(await service.decide(req.params.id, false)));
-  app.get('/api/settings/automation', (req,res) => res.json(service.state.settings));
+  app.get('/api/automation', async (req,res) => res.json(await service.automation()));
+  app.put('/api/automation', async (req,res) => res.json(await service.updateAutomation(req.body)));
+  app.get('/api/settings/automation', (req,res) => res.json(service.legacySettings()));
   app.put('/api/settings/automation', async (req,res) => res.json(await service.updateSettings(req.body)));
   app.get('/api/notifications', (req,res) => res.json([...service.state.notifications].reverse()));
   app.patch('/api/notifications/:id/read', async (req,res) => res.json(await service.run(() => {

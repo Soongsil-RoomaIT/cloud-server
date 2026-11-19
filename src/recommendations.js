@@ -2,7 +2,7 @@ const { randomUUID } = require('node:crypto');
 const { ApiError, settings } = require('./validation');
 
 const required = 10;
-const ruleKeys = { humidityHigh: 'humidityOn', humidityLow: 'humidityOff', pm25Bad: 'pm25On', rainProbability: 'rainProbability' };
+const { ruleKeys } = require('./automation');
 const observations = {
   'dehumidifier-1': {
     ON: ['humidityHigh', 'humidity', '수동으로 제습기를 켠 시점의 습도 중앙값'],
@@ -85,4 +85,4 @@ function actOnRecommendation(service, id, action) {
   });
 }
 
-module.exports = { ruleKeys, manualObservation, collectRecommendation, listRecommendations, actOnRecommendation };
+module.exports = { manualObservation, collectRecommendation, listRecommendations, actOnRecommendation };

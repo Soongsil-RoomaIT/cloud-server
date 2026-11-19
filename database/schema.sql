@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS recommendation (
   payload jsonb NOT NULL CHECK (payload ?& ARRAY['id','metric','status','current','proposed','createdAt']
     AND payload->>'id' = id AND payload->>'status' IN ('PROPOSED','APPLIED','REJECTED','REVERTED'))
 );
+-- One automation configuration for the room. Its runtime thresholds and
+-- web rule metadata are updated with room_state in the same statement.
+CREATE TABLE IF NOT EXISTS automation (
+  id text PRIMARY KEY CHECK (id = 'room-1'),
+  settings jsonb NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+);
 -- Small room state is saved atomically. JSON includes devices, commands,
 -- decisions, notifications, settings, recovery deduplication and edge status.
 CREATE TABLE IF NOT EXISTS room_state (
