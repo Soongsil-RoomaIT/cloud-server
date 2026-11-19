@@ -50,9 +50,9 @@ function handleLegacy(service, kind, payload, packet = {}) {
       if (duration != null && (typeof duration!=='number'||!Number.isFinite(duration)||duration<0)) throw new v.ApiError(400,'잘못된 복구 시간');
       const offlineSince=state.legacy.offlineSince || (typeof duration==='number'?new Date(Date.parse(at)-duration*1000).toISOString():null);
       if (offlineSince && offlineSince<=at) {
-        if (!state.recoveryReported) service.event('edge.recovered',{offlineSince,recoveredAt:at,localActions:[]});
-        state.recoveryReported=true;state.pendingRecovery=null;state.offlineSince=null;
-        service.notify('엣지 연결 복구: 기존 엣지 이벤트에는 실제 완료 확인이 없어 로컬 실행 완료 내역은 비워 두었습니다.');
+        service.reportRecovery({ offlineSince, recoveredAt: at, localActions: [] },
+          '엣지 연결이 복구되었습니다. 로컬 제어의 실행 완료 내역은 아직 확인되지 않았습니다.');
+        state.offlineSince = null;
       }
       state.legacy.offlineSince=null;
     } else if (['door_opened','door_closed'].includes(event.type)) {
@@ -66,7 +66,9 @@ function handleLegacy(service, kind, payload, packet = {}) {
       const c=state.commands.find(c=>c.deviceId===id&&c.action===action&&c.status==='PENDING'&&at>=c.createdAt&&at<=c.expiresAt);
       if(event.type==='actuator_error'&&c)service.finish(c,'FAILED','엣지가 액추에이터 오류를 보고했습니다.',at);
       else if(event.type==='remote_command'&&c){c.acceptedAt=at;c.reason='엣지가 명령을 수락했습니다. 실제 완료 확인 대기 중입니다.';}
-      else if(event.type==='auto_control')service.notify(`${service.device(id).name}: 엣지 로컬 제어 요청 접수 (실제 완료 미확인)`);
+      else if (event.type === 'auto_control') service.notify(`${service.device(id).name}: 엣지 로컬 제어 요청 접수 (실제 완료 미확인)`, {
+        title: '엣지 로컬 제어 요청', type: 'device.command.requested', data: { deviceId: id, action },
+      });
     } else if(event.type==='sensor_error')state.sensorIssue='엣지가 센서 오류를 보고했습니다.';
     else if(event.type==='sensor_recovered')state.sensorIssue=null;
     service.evaluate(now);

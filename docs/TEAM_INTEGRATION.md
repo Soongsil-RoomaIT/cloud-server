@@ -34,7 +34,7 @@ backend는 main과 minjae의 차이까지 비교했으며 **실제 연결 권장
 
 ### D 백엔드 담당 최신 minjae
 
-Node Gateway는 `/api` 전체를 C로 중계하며 자체적으로 `/api/push/token`, GET `/api/notifications`, POST `/api/notifications/send`를 처리합니다. WS 인증 후 C에 Authorization 헤더로 JWT를 전달합니다. 이 서버가 그 헤더와 Keycloak 서명/만료/audience 및 ROOM_ALLOWED_SUBJECTS를 검증하도록 구현했습니다.
+Node Gateway는 `/api` 전체를 C로 중계하며 자체적으로 `/api/push/token`, GET `/api/notifications`, POST `/internal/notifications`를 처리합니다. WS 인증 후 C에 Authorization 헤더로 JWT를 전달합니다. 이 서버가 그 헤더와 Keycloak 서명/만료/audience 및 ROOM_ALLOWED_SUBJECTS를 검증하도록 구현했습니다.
 
 현재 Gateway의 REST proxy는 **Idempotency-Key를 전달하지 않습니다**. `node-service/src/app.js`의 headers 생성 뒤에 다음을 추가해야 합니다. 실제 모드의 C는 키가 없는 수동 명령을 400으로 거부하므로, 이 수정 전에는 D 경유 원격 제어가 실패하는 것이 정상입니다. 본 작업에서 D 저장소를 수정·push하지 않았습니다.
 
@@ -55,28 +55,15 @@ JWT_AUDIENCE=room-care-api
 ROOM_ALLOWED_SUBJECTS=실제-Keycloak-subject
 ```
 
-자동화 알림은 D가 제공하는 room-care-automation / NOTIFICATION_SENDER 서비스계정을 사용합니다. NOTIFICATION_SEND_URL=http://localhost:8080/api/notifications/send, AUTOMATION_TOKEN_URL=http://localhost:8180/realms/room-care/protocol/openid-connect/token, NOTIFICATION_USER_ID=해당 공간 사용자 subject와 AUTOMATION_CLIENT_SECRET을 비공개 .env에 설정합니다. C가 토큰 캐시·만료 전 갱신·최대 3회 시도와 결과 기록을 담당합니다. 기본 설정은 비활성이고 실제 전송은 수행하지 않았습니다.
+팀 Compose는 클라우드 서버에 `GATEWAY_INTERNAL_NOTIFICATIONS_URL=http://gateway-service:8080/internal/notifications`를 주입합니다. 클라우드 서버와 Gateway의 `INTERNAL_API_KEY`에는 같은 값을 사용합니다. 클라우드 서버는 `X-Internal-Key` 헤더와 `eventId`, `title`, `body`, `data`를 보냅니다. Gateway는 자신의 `ROOM_USER_ID`로 수신자를 정하고, 24시간 동안 같은 이벤트 ID를 중복 처리하지 않습니다.
 
-D의 알림 목록은 id/title/body/data/status이며 C의 직접 조회 목록은 message/read/pushStatus를 포함합니다. D 경유 GET 목록은 D가 소유하므로 C의 읽음 API와 곧바로 같은 저장소를 공유하지 않습니다. 목록·읽음 UI의 최종 계약은 E/D/C가 맞춰야 합니다. D가 dry-run/partial-failure를 반환하면 C도 그 상태를 보존합니다.
+기기 동작 결과는 `device.command`, 엣지 복구는 `edge.recovered`, 기준값 추천 적용은 `recommendation.applied`로 전송합니다. Gateway는 알림을 저장하고 `notification.new`를 브라우저에 전달합니다. 클라우드 서버는 최대 3회 전송을 시도하고 Gateway의 결과 상태를 기록합니다.
 
 ### D main 브랜치의 이전 Java 구현 참고
 
 현재 Gateway는 `/api/devices/**`, `/api/sensors/**`, `/api/automation/**`만 Cloud Server로 보냅니다. `/api/edge/**`, `/api/commands/**`, `/api/forecast`, `/api/decisions/**`, `/api/settings/**`, `/ws`는 추가해야 합니다. [gateway-routes.example.yml](gateway-routes.example.yml)은 라우팅 검토용 예시이며 현재 팀 서버에 적용하지 않았습니다.
 
-`/api/notifications/**`는 현재 D 서비스로 전부 라우팅됩니다. C의 GET 목록과 PATCH 읽음 처리는 정확한 경로/메서드로 먼저 분리하고, D의 POST devices/send는 기존 서비스로 보내야 합니다. C의 notification.created 이벤트를 D의 아래 API로 전달할 내부 인증과 대상 userId 계약도 필요합니다.
-
-```json
-POST /api/notifications/send
-{
-  "eventId": "C 알림의 고유 id",
-  "userId": "Keycloak 사용자 subject",
-  "title": "자취방 원격 케어",
-  "body": "장치 동작 결과",
-  "data": { "commandId": "명령 id", "type": "device.command" }
-}
-```
-
-D의 현 구현은 FCM 자격 증명이 없으면 dry-run입니다. 서비스계정 client credentials를 분리할 계획이나 아직 준비되지 않았습니다. Redis 중복 키를 실제 발송 전에 넣으므로 발송 도중 실패 후 재시도 동작도 점검해야 합니다. 서버 웹 알림 성공을 FCM 수신 성공으로 간주하지 않습니다.
+Java 구현의 알림 라우팅은 Node Gateway 도입 전의 구성입니다. 현재 연동 계약은 위의 내부 API를 사용합니다.
 
 Gateway는 현재 모든 요청에 JWT를 요구합니다. 브라우저 WS는 Authorization 헤더를 넣지 못하므로 단순 WS 라우트 추가만으로 연결되지 않습니다. 쿠키/첫 메시지 인증 중 팀 방식을 합의하고, Cloud Server의 테스트용 고정 Bearer 토큰과 Keycloak JWT 검증을 연결해야 합니다. 외부 공개 시 C가 사용자별 JWT를 검증하거나 인증된 내부망 Gateway만 접근하도록 배치해야 하며, 보호 없이 직접 공개하지 않습니다.
 

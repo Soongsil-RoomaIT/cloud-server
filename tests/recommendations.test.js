@@ -90,6 +90,9 @@ test('database recommendation history, rejection, stale settings and atomic roll
   assert.equal(applied.data.status, 'APPLIED');
   assert.ok(applied.data.appliedAt);
   assert.equal((await store.load()).settings.humidityOn, 70);
+  assert.deepEqual(service.state.notifications.at(-1).data, {
+    type: 'recommendation.applied', recommendationId: row.id, metric: 'humidityHigh', previous: '65', threshold: '70',
+  });
   assert.equal((await service.automation()).rules.find(rule => rule.id === 'humidityHigh').threshold, 70);
   await service.updateSettings({ ...service.state.settings, humidityOn: 73 });
   assert.equal((await request('/rec-1/revert', 'POST')).status, 409);

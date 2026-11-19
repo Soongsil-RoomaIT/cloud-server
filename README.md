@@ -69,7 +69,7 @@ npm start
 
 기존 엣지는 액추에이터 `set()` 호출 성공을 `remote_command`로 발행하지만, 하드웨어 드라이버의 `set()`은 비동기 동작 수락입니다. 따라서 그 이벤트를 실제 완료 ACK로 바꾸지 않습니다. 창문·가전의 완료 피드백, commandId·만료 처리, 제습기 등록이 엣지에 추가되어야 실제 장비 전체 제어가 완성됩니다. 초기 기기 상태는 `ASSUMED`, 미수신 시각은 Unix epoch이며 `/health.devicesConfirmed`로 확인된 기기를 구분합니다.
 
-로그인·JWT 발급·FCM 발송은 팀 `backend/minjae` 담당 기능입니다. 이 서버는 Keycloak JWT 검증·단일 공간 사용자 허용 목록과 D의 서비스계정 알림 API 연결 어댑터를 제공합니다. 기본 알림 목록/WS 알림은 **브라우저가 꺼져 있을 때의 FCM push가 아닙니다**. 실제 푸시 자격 증명이나 타인에게 알림 전송을 설정하지 않았습니다.
+로그인·JWT 발급·FCM 발송은 팀 `backend/minjae` 담당 기능입니다. 이 서버는 Keycloak JWT 검증·단일 공간 사용자 허용 목록과 Gateway 내부 알림 API 연결를 제공합니다. 기본 알림 목록/WS 알림은 **브라우저가 꺼져 있을 때의 FCM push가 아닙니다**. 실제 푸시 자격 증명이나 타인에게 알림 전송을 설정하지 않았습니다.
 
 ## 실제 서비스로 전환하기
 
@@ -83,7 +83,7 @@ npm start
 
 서버 기본 bind는 127.0.0.1입니다. `API_BEARER_TOKEN`은 로컬 연동 점검용 공통 토큰입니다. JWT_ISSUER_URI, JWT_JWK_SET_URI, JWT_AUDIENCE, ROOM_ALLOWED_SUBJECTS를 설정하면 Keycloak RS256 서명·issuer·audience·exp·sub와 해당 공간 사용자 권한을 직접 검증합니다. 토큰 인증 시 WS는 첫 auth 메시지 또는 D Gateway가 전달하는 Authorization handshake 헤더를 받습니다. 현재 팀 프론트엔드는 auth 메시지를 아직 구현하지 않아 기본 데모에서는 인증을 비워 둡니다. `NODE_ENV=production`은 데모 및 JWT 설정 없는 실행을 거부합니다.
 
-실제 알림 연결은 NOTIFICATION_SEND_URL, NOTIFICATION_USER_ID, AUTOMATION_TOKEN_URL, AUTOMATION_CLIENT_SECRET을 설정합니다. room-care-automation 토큰을 캐시하고 만료 전에 재발급하며, 동일 eventId로 최대 3회 시도합니다. D가 반환한 sent/dry-run/duplicate/no-targets/partial-failure를 구분해 저장합니다. 수신자의 실제 기기 표시까지 보장하지 않습니다. 설정 방법과 Gateway의 Idempotency-Key 전달 누락 수정은 팀 연동 문서를 참고하세요.
+실서비스에서 `GATEWAY_INTERNAL_NOTIFICATIONS_URL`에 Gateway 내부 알림 주소를 지정하고, Gateway와 같은 `INTERNAL_API_KEY`를 설정합니다. 클라우드 서버는 알림을 저장한 뒤 전송하고, 전송 실패 시 같은 `eventId`로 30초 간격으로 최대 3회 시도합니다. Gateway가 반환한 sent/dry-run/duplicate/no-targets/partial-failure를 저장합니다. Gateway가 브라우저의 알림 목록과 `notification.new` 이벤트를 제공합니다.
 
 ## 검증
 

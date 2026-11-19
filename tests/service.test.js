@@ -68,6 +68,7 @@ test('recovery fallback is sent even if edge does not provide local action repor
   const {s}=await fixture();const messages=[];s.on('message',m=>messages.push(m));
   await s.ingest('status',{online:false,offlineMode:false});await s.ingest('status',{online:true,offlineMode:false});await s.tick(Date.now()+2100);await s.tick(Date.now()+2200);
   assert.equal(messages.filter(m=>m.type==='edge.recovered').length,1);
+  assert.equal(s.state.notifications.filter(n => n.data.type === 'edge.recovered').length, 1);
 });
 test('approval mode proposes once, stale recommendation cannot be approved', async () => {
   const {s,sent}=await fixture();await s.updateSettings({...defaults,enabled:true});
@@ -81,6 +82,10 @@ test('approved recommendation is executed through the same ACK path', async () =
   const d=await s.decide(s.state.decisions[0].id,true);assert.equal(d.status,'APPROVED');
   await s.ingest('ack',{commandId:d.commandId,status:'EXECUTED',reason:'습도 제어',executedAt:new Date().toISOString()});
   assert.equal(s.state.decisions[0].status,'EXECUTED');assert.equal(s.device('dehumidifier-1').state,'ON');
+  assert.deepEqual(s.state.notifications.at(-1).data, {
+    type: 'device.command', commandId: d.commandId, deviceId: 'dehumidifier-1',
+    action: 'ON', source: 'APPROVED', status: 'EXECUTED',
+  });
 });
 test('auto mode respects manual hold and suppresses duplicate commands', async () => {
   const {s,sent}=await fixture();await s.updateSettings({...defaults,enabled:true,mode:'AUTO'});

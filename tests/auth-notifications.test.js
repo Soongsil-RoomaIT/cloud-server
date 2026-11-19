@@ -1,4 +1,7 @@
 const {test}=require('node:test');
+const { once } = require('node:events');
+const express = require('express');
+const { config: readConfig } = require('../src/config');
 const assert=require('node:assert/strict');
 const {createAuthenticator}=require('../src/auth');
 const {NotificationBridge}=require('../src/notification-bridge');
@@ -25,20 +28,86 @@ test('gateway upstream WS Authorization header authenticates without a second au
  const message=await new Promise((resolve,reject)=>{socket.once('message',raw=>resolve(JSON.parse(raw)));socket.once('error',reject);});
  assert.equal(message.type,'edge.status');assert.equal(message.payload.online,true);
 });
-test('notification service account token cache, stable eventId and truthful dry-run result',async()=>{
- const config={notificationUrl:'http://gateway.test/api/notifications/send',notificationTokenUrl:'http://keycloak.test/token',notificationClientId:'room-care-automation',notificationClientSecret:'test-only',notificationUserId:'owner'};
- const s=new RoomService(new MemoryStore(),config,{current:()=>({weather:[]})});await s.init();
- await s.run(()=>{s.notify('첫 번째');s.notify('두 번째');});const calls=[];
- const bridge=new NotificationBridge(s,config,async(url,options)=>{
-  calls.push({url,options});return {ok:true,json:async()=>url.endsWith('/token')?{access_token:'mock-token',expires_in:300}:{status:'dry-run',targetCount:0,successCount:0}};
- });
- await bridge.flush();await bridge.flush();assert.equal(calls.length,3);assert.ok(s.state.notifications.every(n=>n.pushStatus==='DRY-RUN'));
- const sent=JSON.parse(calls[1].options.body);assert.equal(sent.eventId,s.state.notifications[0].id);assert.equal(sent.userId,'owner');assert.equal(calls[1].options.headers.Authorization,'Bearer mock-token');
+test('Gateway internal API receives the shared key and stable event ID, and returns its delivery status', async t => {
+  const key = 'test-only';
+  const app = express();
+  app.use(express.json());
+  const received = [];
+  app.post('/internal/notifications', (req, res) => {
+    if (req.get('x-internal-key') !== key) return res.sendStatus(401);
+    received.push({ body: req.body, authorization: req.get('authorization') });
+    res.json({ status: 'dry-run', targetCount: 0, successCount: 0 });
+  });
+  const server = app.listen(0, '127.0.0.1');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await once(server, 'listening');
+  const url = `http://127.0.0.1:${server.address().port}/internal/notifications`;
+  const env = { DEMO_MODE: 'false', DATABASE_URL: 'db', MQTT_URL: 'mqtt://test', GATEWAY_INTERNAL_NOTIFICATIONS_URL: url };
+  assert.throws(() => readConfig(env), /INTERNAL_API_KEY/);
+  assert.throws(() => readConfig({ ...env, INTERNAL_API_KEY: key, GATEWAY_INTERNAL_NOTIFICATIONS_URL: 'file:///invalid' }), /GATEWAY_INTERNAL_NOTIFICATIONS_URL/);
+  const config = readConfig({ ...env, INTERNAL_API_KEY: key });
+  const s = new RoomService(new MemoryStore(), config, { current: () => ({ weather: [] }) });
+  await s.init();
+  await s.run(() => {
+    s.notify('창문이 닫혔습니다.', { title: '창문 닫기', type: 'device.command', commandId: 'cmd-1', data: { source: 'AUTO' } });
+  });
+  const bridge = new NotificationBridge(s, config);
+  await bridge.flush();
+  await bridge.flush();
+  const entry = s.state.notifications[0];
+  assert.deepEqual(received, [{
+    body: {
+      eventId: entry.id, title: '창문 닫기', body: '창문이 닫혔습니다.',
+      data: { type: 'device.command', commandId: 'cmd-1', source: 'AUTO' },
+    },
+    authorization: undefined,
+  }]);
+  assert.equal(entry.pushStatus, 'DRY-RUN');
+  assert.deepEqual(entry.pushResult, { status: 'dry-run', targetCount: 0, successCount: 0 });
 });
 test('notification outages retry with same ID and stop after three attempts',async()=>{
- const config={notificationUrl:'http://gateway.test/send',notificationTokenUrl:'http://keycloak.test/token',notificationClientId:'room-care-automation',notificationClientSecret:'test-only',notificationUserId:'owner'};
- const s=new RoomService(new MemoryStore(),config,{current:()=>({weather:[]})});await s.init();await s.run(()=>s.notify('알림'));
- const bridge=new NotificationBridge(s,config,async()=>{throw Error('offline');});
- for(let i=0;i<3;i++){await bridge.flush();s.state.notifications[0].nextAttemptAt=0;}
- assert.equal(s.state.notifications[0].pushStatus,'FAILED');assert.equal(s.state.notifications[0].pushAttempts,3);
+ const config = { notificationUrl: 'http://gateway.test/internal/notifications', notificationKey: 'test-only' };
+ const s = new RoomService(new MemoryStore(), config, { current: () => ({ weather: [] }) });
+ await s.init();
+ await s.run(() => s.notify('알림'));
+ const eventIds = [];
+ const bridge = new NotificationBridge(s, config, async (_url, request) => {
+   eventIds.push(JSON.parse(request.body).eventId);
+   throw new Error('offline');
+ });
+ for (let i = 0; i < 3; i++) {
+   await bridge.flush();
+   await s.run(() => { s.state.notifications[0].nextAttemptAt = 0; });
+ }
+ await bridge.flush();
+ const notification = s.state.notifications[0];
+ assert.deepEqual(eventIds, Array(3).fill(notification.id));
+ assert.equal(notification.pushStatus, 'FAILED');
+ assert.equal(notification.pushAttempts, 3);
+});
+
+test('notification bridge skips uncommitted rows and sends nothing after rollback', async () => {
+  const config = { notificationUrl: 'http://gateway.test/internal/notifications', notificationKey: 'test-only' };
+  const store = new MemoryStore();
+  const s = new RoomService(store, config, { current: () => ({ weather: [] }) });
+  await s.init();
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  store.save = async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error('storage failure');
+  };
+  let calls = 0;
+  const bridge = new NotificationBridge(s, config, async () => { calls++; });
+  const transaction = assert.rejects(s.run(() => s.notify('롤백 대상')), /storage failure/);
+  await entered.promise;
+  try {
+    await bridge.flush();
+  } finally {
+    release.resolve();
+  }
+  await transaction;
+  assert.equal(calls, 0);
+  assert.deepEqual(s.state.notifications, []);
 });

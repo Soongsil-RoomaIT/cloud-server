@@ -31,7 +31,10 @@ class RoomService extends EventEmitter {
     this.state.confirmedDevices = [];
     this.state.idempotency ||= {}; this.state.legacy ||= { seen: [], localActions: [], offlineSince: null };
     if (!this.config.demo && this.config.mqttProtocol === 'edge-agent') this.device('dehumidifier-1').actions = [];
-    if (this.state.edge.online) this.state.offlineSince = this.state.edge.lastSeenAt;
+    if (this.state.edge.online) {
+      this.state.offlineSince = this.state.edge.lastSeenAt;
+      this.state.recoveryReported = false;
+    }
     this.state.edge.online = false;
     for (const c of this.state.commands) if (c.status === 'PENDING') {
       c.status = 'FAILED'; c.reason = '서버 재시작으로 실행 결과를 확인하지 못했습니다. 기기 상태를 확인하세요.';
@@ -62,11 +65,14 @@ class RoomService extends EventEmitter {
     return next;
   }
   trim() {
-    for (const name of ['commands', 'decisions', 'notifications']) {
-      const active = name === 'commands' ? ['PENDING'] : name === 'decisions' ? ['PROPOSED','APPROVED'] : [];
+    for (const name of ['commands', 'decisions']) {
+      const active = name === 'commands' ? ['PENDING'] : ['PROPOSED','APPROVED'];
       const rows = this.state[name];
       this.state[name] = [...rows.filter(r => active.includes(r.status)), ...rows.filter(r => !active.includes(r.status)).slice(-1000)];
     }
+    const notifications = this.state.notifications;
+    const recent = new Set(notifications.filter(row => row.pushStatus !== 'PENDING').slice(-1000));
+    this.state.notifications = notifications.filter(row => row.pushStatus === 'PENDING' || recent.has(row));
     this.state.recoveries = this.state.recoveries.slice(-1000);
     this.state.legacy.seen = this.state.legacy.seen.slice(-10000);
     this.state.legacy.localActions = this.state.legacy.localActions.slice(-1000);
@@ -74,9 +80,26 @@ class RoomService extends EventEmitter {
   }
   event(type, payload) { this.events.push(payload === undefined ? { type } : { type, payload: structuredClone(payload) }); }
   device(id) { const d = this.state.devices.find(d => d.id === id); if (!d) throw new v.ApiError(404, '기기를 찾을 수 없습니다.'); return d; }
-  notify(message, commandId = null) {
-    const n = { id: randomUUID(), message, commandId, createdAt: new Date().toISOString(), read: false, pushStatus: this.config.notificationUrl?'PENDING':'DISABLED', pushAttempts: 0 };
-    this.state.notifications.push(n); this.event('notification.created', n);
+  notify(message, { title = '자취방 원격 케어', type = 'room.notification', commandId = null, data = {} } = {}) {
+    const notification = {
+      id: randomUUID(), title, message, commandId, createdAt: new Date().toISOString(), read: false,
+      data: { ...data, type, ...(commandId ? { commandId } : {}) },
+      pushStatus: this.config.notificationUrl && !this.config.demo ? 'PENDING' : 'DISABLED',
+      pushAttempts: 0,
+    };
+    this.state.notifications.push(notification);
+    this.event('notification.created', notification);
+  }
+  reportRecovery(report, message = null) {
+    if (!this.state.recoveryReported) {
+      this.event('edge.recovered', report);
+      this.notify(message ?? `엣지 연결이 복구되었습니다. 로컬 동작 ${report.localActions.length}건`, {
+        title: '엣지 연결 복구', type: 'edge.recovered',
+        data: { offlineSince: report.offlineSince, recoveredAt: report.recoveredAt, localActionCount: String(report.localActions.length) },
+      });
+    }
+    this.state.recoveryReported = true;
+    this.state.pendingRecovery = null;
   }
   touch(offlineMode, now = Date.now(), recovering = true) {
     const wasOnline = this.state.edge.online;
@@ -132,9 +155,7 @@ class RoomService extends EventEmitter {
         this.touch(undefined, now, false);
         if (!this.state.recoveries.includes(key)) {
           this.state.recoveries.push(key);
-          if (!this.state.recoveryReported) this.event('edge.recovered', report);
-          this.state.recoveryReported = true; this.state.pendingRecovery = null;
-          this.notify(`엣지 연결이 복구되었습니다. 로컬 동작 ${report.localActions.length}건`);
+          this.reportRecovery(report);
           // Replay in execution order so an old action cannot overwrite a newer state.
           for (const a of [...report.localActions].sort((a,b) => a.executedAt.localeCompare(b.executedAt))) this.applyDevice(this.device(a.deviceId), a.state, a.executedAt);
         }
@@ -164,7 +185,12 @@ class RoomService extends EventEmitter {
     const decision = this.state.decisions.find(d => d.commandId === c.id);
     if (decision) decision.status = status;
     this.event('command.ack', { commandId: c.id, deviceId: c.deviceId, status, reason, ...(status === 'EXECUTED' ? { device: this.device(c.deviceId) } : {}) });
-    this.notify(`${this.device(c.deviceId).name}: ${status === 'EXECUTED' ? '동작 완료' : '동작 실패'} — ${reason}`, c.id);
+    const device = this.device(c.deviceId);
+    const title = `${device.name} ${status === 'EXECUTED' ? '동작 완료' : '동작 실패'}`;
+    this.notify(`${device.name}: ${status === 'EXECUTED' ? '동작 완료' : '동작 실패'} — ${reason}`, {
+      title, type: c.source === 'PREDICTION' ? 'prediction.command' : 'device.command', commandId: c.id,
+      data: { deviceId: c.deviceId, action: c.action, source: c.source, status },
+    });
   }
   command(id, action, source = 'MANUAL', reason = '사용자 원격 조작', now = Date.now()) {
     const device = this.device(id);
@@ -310,8 +336,7 @@ class RoomService extends EventEmitter {
       if (this.state.edge.online && now - Date.parse(this.state.edge.lastSeenAt) >= this.config.edgeTimeoutMs) this.offline(now);
       if (this.state.edge.online && this.state.pendingRecovery && this.state.pendingRecovery.dueAt <= now) {
         const { offlineSince, recoveredAt } = this.state.pendingRecovery;
-        this.event('edge.recovered', { offlineSince, recoveredAt, localActions: [] });
-        this.state.pendingRecovery = null; this.state.recoveryReported = true;
+        this.reportRecovery({ offlineSince, recoveredAt, localActions: [] });
       }
       for (const c of this.state.commands) if (c.status === 'PENDING' && Date.parse(c.expiresAt) <= now) this.finish(c, 'FAILED', `${this.config.commandTimeoutMs/1000}초 내 실행 확인을 받지 못했습니다. 실제 기기 상태를 확인하세요.`);
       this.evaluate(now);

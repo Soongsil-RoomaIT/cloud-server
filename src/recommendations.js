@@ -77,6 +77,10 @@ function actOnRecommendation(service, id, action) {
         state.appliedThresholds[record.metric] = [...(owners ?? []), id];
         record.status = 'APPLIED';
         record.appliedAt = new Date().toISOString();
+        service.notify(`${record.metric} 기준값을 ${record.current}에서 ${record.proposed}(으)로 변경했습니다.`, {
+          title: '기준값 추천 적용', type: 'recommendation.applied',
+          data: { recommendationId: record.id, metric: record.metric, previous: String(record.current), threshold: String(record.proposed) },
+        });
       }
       service.evaluate();
     }
