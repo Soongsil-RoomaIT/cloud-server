@@ -6,7 +6,7 @@ function attachRealtime(server, service, config) {
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16384,
     verifyClient: async ({ origin,req },done) => {
       if(origin&&!config.origins.includes(origin))return done(false,403);
-      // D/minjae forwards the JWT in the upstream WebSocket handshake header.
+      // Optional upstream JWT authentication via the WebSocket handshake header.
       const token=bearer(req);
       if(!token)return done(true);
       try{req.authenticatedUser=await service.auth.verify(token);done(true);}catch{done(false,401);}

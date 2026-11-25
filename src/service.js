@@ -1,11 +1,10 @@
 const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const v = require('./validation');
-const { manualObservation, collectRecommendation } = require('./recommendations');
 const { ruleKeys, ruleEnabled, metadata, automationView, automationUpdate } = require('./automation');
 
-const defaults = { enabled: false, mode: 'APPROVAL', humidityOn: 65, humidityOff: 55, co2Open: 1000, pm25On: 35, rainProbability: 60 };
-const additionalThresholds = { temperatureHigh: 28, pm10Bad: 80 };
+const defaults = { enabled: false, mode: 'APPROVAL', humidityOn: 70, humidityOff: 60, co2Open: 1000, pm25On: 35, rainProbability: 60 };
+const additionalThresholds = { temperatureHigh: 30, pm10Bad: 80 };
 function initialState() {
   const updatedAt = new Date().toISOString();
   return { devices: [
@@ -26,7 +25,7 @@ class RoomService extends EventEmitter {
     this.state.settings = { ...defaults, ...additionalThresholds, ...this.state.settings };
     const storedMeta = this.state.automationMeta ?? {};
     this.state.automationMeta = { ...metadata(), ...storedMeta };
-    this.state.thresholdSamples ??= {};
+    if (this.latest) this.updateGasState(this.latest.gasDetected, this.latest.measuredAt);
     this.state.appliedThresholds ??= {};
     this.state.confirmedDevices = [];
     const startedAt = new Date().toISOString();
@@ -142,7 +141,7 @@ class RoomService extends EventEmitter {
         if (Date.parse(r.measuredAt) > now + 30000 || Date.parse(r.measuredAt) < now - 8 * 86400000) throw new v.ApiError(400, '센서 측정 시각이 허용 범위를 벗어났습니다.');
         await this.store.insert(r);
         this.touch(undefined, now);
-        if (!this.latest || r.measuredAt > this.latest.measuredAt) { this.latest = r; this.event('sensor.update', r); }
+        this.updateLatest(r);
       } else if (kind === 'status') {
         const s = v.edgeStatus.parse(payload);
         if (s.online) this.touch(s.offlineMode, now);
@@ -161,12 +160,7 @@ class RoomService extends EventEmitter {
         if (ack.executedAt < c.createdAt || Date.parse(ack.executedAt) > now + 30000) throw new v.ApiError(400, '명령 실행 시각 오류');
         this.touch(undefined, now);
         if (ack.status === 'EXECUTED' && ack.executedAt > c.expiresAt) throw new v.ApiError(400, '만료된 명령의 실행 확인입니다. 별도 기기 상태를 보고하세요.');
-        if (c.status === 'PENDING') {
-          this.finish(c, ack.status, ack.reason, ack.executedAt, ack.stateSource);
-          if (ack.status === 'EXECUTED' && c.thresholdObservation) {
-            await collectRecommendation(this, c.thresholdObservation);
-          }
-        }
+        if (c.status === 'PENDING') this.finish(c, ack.status, ack.reason, ack.executedAt, ack.stateSource);
       } else if (kind === 'recovery') {
         const report = v.recovery.parse(payload);
         if (Date.parse(report.recoveredAt) > now + 30000) throw new v.ApiError(400, '복구 시각 오류');
@@ -184,13 +178,37 @@ class RoomService extends EventEmitter {
       this.evaluate(now);
     });
   }
+  updateLatest(reading) {
+    if (this.latest && reading.measuredAt <= this.latest.measuredAt) return;
+    this.latest = reading;
+    this.updateGasState(reading.gasDetected, reading.measuredAt);
+    this.event('sensor.update', reading);
+  }
+  updateGasState(detected, at) {
+    // Warm-up or a broken sensor cannot clear a confirmed detection.
+    if (typeof detected !== 'boolean') return;
+    const previous = this.state.gasState;
+    if (!previous || at > previous.at || (at === previous.at && detected)) this.state.gasState = { detected, at };
+  }
+  reportGasEvent(detected, at) {
+    this.updateGasState(detected, at);
+    const title = detected ? '유해가스 감지' : '유해가스 감지 해제';
+    this.notify(detected ? '엣지가 유해가스 감지를 보고했습니다.' : '엣지가 유해가스 감지 해제를 보고했습니다.', {
+      title, type: detected ? 'gas.detected' : 'gas.cleared', data: { deviceId: 'window-1' },
+    });
+  }
+  gasBlocksClose(id, action) {
+    return id === 'window-1' && action === 'CLOSE' && this.state.gasState?.detected === true;
+  }
   applyDevice(device, state, at, { stateSource, autoCloseAt } = {}) {
     if (device.state !== 'UNKNOWN' && at < device.updatedAt) return;
     if (!this.state.confirmedDevices.includes(device.id)) this.state.confirmedDevices.push(device.id);
     const wasOpen = device.state === 'OPEN';
     device.state = state;
     device.updatedAt = at;
-    const defaultSource = { FRONT_DOOR: 'SENSOR', WINDOW: 'COMMANDED' }[device.type] ?? 'ASSUMED';
+    if (device.type === 'WINDOW' && state === 'CLOSED') this.state.ventilationOpenedAt = null;
+    const defaultSource = { FRONT_DOOR: 'SENSOR', WINDOW: 'COMMANDED' }[device.type] ??
+      (this.config.mqttProtocol === 'roomait-v1' ? 'COMMANDED' : 'ASSUMED');
     device.stateSource = stateSource ?? defaultSource;
     if (device.type === 'FRONT_DOOR') {
       const schedule = this.state.doorSchedule;
@@ -226,6 +244,10 @@ class RoomService extends EventEmitter {
     if (status === 'EXECUTED') {
       const source = stateSource ?? (device.state !== 'UNKNOWN' ? device.stateSource : undefined);
       this.applyDevice(device, v.stateFor(c.action), at, { stateSource: source });
+      if (device.id === 'window-1' && c.action === 'OPEN' && ['AUTO', 'APPROVED'].includes(c.source) &&
+          device.state === 'OPEN' && device.updatedAt === at) {
+        this.state.ventilationOpenedAt = at;
+      }
     }
     const decision = this.state.decisions.find(d => d.commandId === c.id);
     if (decision) decision.status = status;
@@ -239,17 +261,21 @@ class RoomService extends EventEmitter {
   command(id, action, source = 'MANUAL', reason = '사용자 원격 조작', now = Date.now()) {
     const device = this.device(id);
     if (!v.validState(device, v.stateFor(action)) || !device.actions?.includes(action)) throw new v.ApiError(400, '이 기기에 사용할 수 없는 명령입니다.');
+    if (this.gasBlocksClose(id, action)) throw new v.ApiError(409, '유해가스 감지 중에는 창문을 닫을 수 없습니다.');
     if (!this.state.edge.online || now - Date.parse(this.state.edge.lastSeenAt) >= this.config.edgeTimeoutMs || !this.transport?.ready()) throw new v.ApiError(503, '엣지가 오프라인입니다.');
     if (this.state.edge.offlineMode) throw new v.ApiError(409, '엣지가 자체 제어 중입니다. 클라우드 모드 복귀 후 조작하세요.');
     if (this.state.commands.some(c => c.deviceId === id && c.status === 'PENDING')) throw new v.ApiError(409, '이 기기에 처리 중인 명령이 있습니다.');
     const c = { id: randomUUID(), deviceId: id, action, source, reason, status: 'PENDING', createdAt: new Date(now).toISOString(), expiresAt: new Date(now+this.config.commandTimeoutMs).toISOString() };
-    if (source === 'MANUAL' && this.state.confirmedDevices.includes(id)) {
-      const observation = manualObservation(device, action, this.latest, now);
-      if (observation) c.thresholdObservation = observation;
-    }
     this.state.commands.push(c);
     if (source === 'MANUAL') this.state.manualUntil[id] = now + 10 * 60000;
     this.effects.push(async () => {
+      if (this.gasBlocksClose(id, action)) {
+        await this.run(() => {
+          const current = this.state.commands.find(x => x.id === c.id);
+          if (current?.status === 'PENDING') this.finish(current, 'FAILED', '유해가스 감지 중 창문 닫기 취소');
+        });
+        return;
+      }
       try { await this.transport.send({ commandId: c.id, deviceId: id, action, reason, issuedAt: c.createdAt, expiresAt: c.expiresAt }); }
       catch { await this.run(() => { const current = this.state.commands.find(x => x.id === c.id); if (current?.status === 'PENDING') this.finish(current, 'FAILED', '엣지로 명령을 전송하지 못했습니다.'); }); }
     });
@@ -302,45 +328,59 @@ class RoomService extends EventEmitter {
     this.evaluate();
   }
   proposals(now) {
-    const s = this.state.settings, r = this.latest, items = [];
+    const s = this.state.settings;
+    const age = this.latest ? now - Date.parse(this.latest.measuredAt) : Infinity;
+    const indoor = age >= -30000 && age <= 15000 ? this.latest : {};
+    const items = [];
     const add = (deviceId, action, factor, value, threshold) => items.push({ deviceId, action, reasons: [{ factor, value, threshold }] });
-    if (this.state.doorOpenedAt && !this.state.doorSchedule?.autoCloseAt && now - Date.parse(this.state.doorOpenedAt) >= 10 * 60000) {
-      add('door-1', 'CLOSE', '현관문 열림', '10분 이상', '10분');
-    }
-    const fresh = r && now - Date.parse(r.measuredAt) <= 15000;
     const active = id => ruleEnabled(this.state, id);
-    if (fresh && r.humidity != null) {
-      if (active('humidityHigh') && r.humidity >= s.humidityOn) add('dehumidifier-1', 'ON', '실내 습도', `${r.humidity}%`, `${s.humidityOn}% 이상`);
-      else if (active('humidityLow') && r.humidity <= s.humidityOff) add('dehumidifier-1', 'OFF', '실내 습도', `${r.humidity}%`, `${s.humidityOff}% 이하`);
+    const highHumidity = active('humidityHigh') && Number.isFinite(indoor.humidity) && indoor.humidity > s.humidityOn;
+    const highTemperature = active('temperatureHigh') && Number.isFinite(indoor.temperature) && indoor.temperature > s.temperatureHigh;
+    const cloudControlsWindow = this.state.gasState?.detected !== true;
+
+    if (active('humidityLow') && Number.isFinite(indoor.humidity) && indoor.humidity < s.humidityOff) {
+      add('dehumidifier-1', 'OFF', '실내 습도', `${indoor.humidity}%`, `${s.humidityOff}% 미만`);
     }
-    const weather = this.weather.current().weather.filter(w => Date.parse(w.time) >= now - 3600000 && Date.parse(w.time) <= now + 2 * 3600000);
+
     const air = this.weather.airQuality?.(now);
-    const dustRules = [
-      { enabled: active('pm25Bad'), samples: air ? [air.pm25] : weather.map(w => w.pm25), threshold: s.pm25On, label: '실외 초미세먼지' },
-      { enabled: active('pm10Bad'), samples: [air?.pm10], threshold: s.pm10Bad, label: '실외 미세먼지' },
-    ].filter(rule => rule.enabled);
-    const dirty = dustRules.find(rule => rule.samples.some(sample => Number.isFinite(sample) && sample >= rule.threshold));
-    if (dirty) {
-      add('purifier-1', 'ON', dirty.label, '높음', `${dirty.threshold} 이상`);
-    } else if (active('pm25Bad') && fresh && r.pm25 != null) {
-      if (r.pm25 >= s.pm25On) add('purifier-1', 'ON', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On} 이상`);
-      else if (r.pm25 <= s.pm25On * 0.6) add('purifier-1', 'OFF', '실내 초미세먼지', `${r.pm25}µg/m³`, `${s.pm25On * 0.6} 이하`);
+    const dust = [
+      { id: 'pm25Bad', value: air?.pm25, limit: s.pm25On, name: '외기 PM2.5' },
+      { id: 'pm10Bad', value: air?.pm10, limit: s.pm10Bad, name: '외기 PM10' },
+    ].filter(rule => active(rule.id));
+    const badAir = dust.find(rule => Number.isFinite(rule.value) && rule.value > rule.limit);
+    if (badAir) {
+      const value = `${badAir.value}µg/m³`, limit = `${badAir.limit}µg/m³ 초과`;
+      if (cloudControlsWindow) add('window-1', 'CLOSE', badAir.name, value, limit);
+      add('purifier-1', 'ON', badAir.name, value, limit);
     }
-    const rain = weather.map(w => w.precipitationProb);
-    const rainy = active('rainProbability') && rain.some(p => Number.isFinite(p) && p >= s.rainProbability);
-    const safeAir = dustRules.length > 0 && dustRules.every(rule =>
-      rule.samples.length > 0 && rule.samples.every(sample => Number.isFinite(sample) && sample < rule.threshold));
-    const safeRain = !active('rainProbability') || (rain.length > 0 && rain.every(p => Number.isFinite(p) && p < s.rainProbability));
-    if (rainy) {
-      add('window-1', 'CLOSE', '강수확률', `${Math.max(...rain.filter(Number.isFinite))}%`, `${s.rainProbability}% 이상`);
-    } else if (dirty) {
-      add('window-1', 'CLOSE', dirty.label, '높음', `${dirty.threshold} 이상`);
-    } else if (fresh && safeAir && safeRain) {
-      if (active('temperatureHigh') && r.temperature != null && r.temperature >= s.temperatureHigh) {
-        add('window-1', 'OPEN', '실내 온도', `${r.temperature}°C`, `${s.temperatureHigh}°C 이상`);
-      } else if (r.co2 != null && r.co2 >= s.co2Open) {
-        add('window-1', 'OPEN', '실내 CO₂', `${r.co2}ppm`, `${s.co2Open}ppm 이상`);
+
+    const hour = 60 * 60000;
+    const currentHour = Math.floor(now / hour) * hour;
+    const forecast = this.weather.current().weather.filter(row =>
+      Date.parse(row.time) >= currentHour && Date.parse(row.time) <= now + 2 * hour);
+    const outsideHumidity = forecast.find(row => Date.parse(row.time) <= now)?.humidity;
+    const humidityKnown = Number.isFinite(outsideHumidity) && Number.isFinite(indoor.humidity);
+    const wetterOutside = humidityKnown && outsideHumidity >= indoor.humidity;
+    const rain = forecast.filter(row => Number.isFinite(row.precipitationProb));
+    const rainy = active('rainProbability') && rain.some(row => row.precipitationProb >= s.rainProbability);
+    const rainHours = new Set(rain.map(row => Math.floor(Date.parse(row.time) / hour) * hour));
+    const clearRain = !active('rainProbability') ||
+      (!rainy && [currentHour, currentHour + hour, currentHour + 2 * hour].every(at => rainHours.has(at)));
+    const clearAir = dust.length > 0 && dust.every(rule => Number.isFinite(rule.value) && rule.value <= rule.limit);
+
+    if ((highHumidity || highTemperature) && clearAir && clearRain && humidityKnown && !wetterOutside) {
+      const factor = highHumidity ? '실내 습도' : '실내 온도';
+      const value = highHumidity ? `${indoor.humidity}%` : `${indoor.temperature}°C`;
+      const limit = highHumidity ? `${s.humidityOn}% 초과` : `${s.temperatureHigh}°C 초과`;
+      if (cloudControlsWindow) add('window-1', 'OPEN', factor, value, limit);
+    } else if (highHumidity && (badAir || rainy || wetterOutside)) {
+      const factor = '환기 제한: ' + (badAir ? badAir.name : rainy ? '비 예보' : '높은 외기 습도');
+      const value = `실내 습도 ${indoor.humidity}%`, limit = `${s.humidityOn}% 초과`;
+      const openedAt = Date.parse(this.state.ventilationOpenedAt);
+      if (cloudControlsWindow && !badAir && !(now - openedAt < 30 * 60000)) {
+        add('window-1', 'CLOSE', factor, value, limit);
       }
+      add('dehumidifier-1', 'ON', factor, value, limit);
     }
     return items;
   }

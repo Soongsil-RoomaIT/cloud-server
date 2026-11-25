@@ -17,21 +17,23 @@
 
 `remote_command`는 수락 시각을 기록하며 기기 상태와 명령 성공을 바꾸지 않습니다. `door_closed`의 실제 센서 이벤트는 대응되는 닫기 명령을 완료시킬 수 있습니다. 기존 Edge에는 창문·가전 완료 피드백이 없어 해당 명령은 미확인 타임아웃이 될 수 있습니다. 장비 상태를 확인하기 전 재명령하지 마세요.
 
-## 완료 ACK를 지원하는 확장 계약
+## 팀 v1.4 계약
 
-`MQTT_PROTOCOL=roomait-v1`로 선택합니다. **현재 팀 Edge가 이 계약을 구현했다고 간주하지 않습니다.** 토픽 prefix는 설정값을 그대로 사용합니다. 모든 메시지는 UTF-8 JSON, UTC ISO timestamp, 숫자 필드는 숫자입니다.
+`MQTT_PROTOCOL=roomait-v1`로 선택합니다. 토픽 prefix는 설정값을 그대로 사용합니다. 메시지는 UTF-8 JSON이고 숫자 필드는 숫자입니다. 센서·기기·명령 시각은 UTC ISO 형식이며 이벤트의 `occurredAt`은 Unix 초입니다.
 
 | suffix | 방향 | payload |
 |---|---|---|
-| sensors | Edge→Cloud | `{measuredAt, temperature, humidity, co2, pm25, pm10}` |
+| sensors | Edge→Cloud | `{measuredAt, temperature, humidity, co2, pm25, pm10, gasDetected}` |
 | devices | Edge→Cloud | `{id, state, updatedAt, stateSource?, autoCloseAt?}` |
 | status | Edge→Cloud | `{online, offlineMode}` |
 | recovery | Edge→Cloud | `{offlineSince, recoveredAt, localActions:[{executedAt,deviceId,state,reason}]}` |
 | ack | Edge→Cloud | `{commandId,status:"EXECUTED"\|"FAILED",reason,executedAt,stateSource?}` |
-| events | Edge→Cloud | 확장 계약에서는 `door_auto_close_scheduled`만 처리 |
+| events | Edge→Cloud | 확장 계약에서는 `door_auto_close_scheduled`, `gas_detected`, `gas_cleared` 처리 |
 | commands | Cloud→Edge | `{commandId,deviceId,action,reason,issuedAt,expiresAt}` |
 
 두 MQTT 모드에서 현관문 예약 이벤트는 `{occurredAt, type:"door_auto_close_scheduled", detail:{autoCloseAt}}` 형식입니다. `occurredAt`은 Unix 초이고 `detail.autoCloseAt`은 Unix 초 또는 ISO 시각입니다. 예약을 취소하면 `null`을 보냅니다. `devices`에서 현관문만 선택 필드 `autoCloseAt`에 ISO 시각 또는 `null`을 보낼 수 있습니다. 조회와 WebSocket은 UTC ISO 시각을 반환합니다.
+
+팀 v1.4는 `MQTT_PROTOCOL=roomait-v1`를 사용합니다. `gasDetected`는 `true`, `false` 또는 `null`입니다. 가스 이벤트는 `events`의 `{occurredAt, type, detail:{}}` 형식으로 오며 `occurredAt`은 Unix 초입니다. 클라우드는 가스 이벤트를 알리고 감지 중 창문 닫기를 막습니다.
 
 확장 명령은 QoS1·retain=false입니다. Edge가 commandId를 영속 중복 차단하고 expiresAt을 검사해야 합니다. 연결 시작 시 상태/기기 스냅샷을 non-retained로 재발행하고 센서 또는 상태 신호를 5초 이내 주기로 보내세요. LWT status는 `{online:false,offlineMode:true}`를 retained로 지정할 수 있습니다. retained 과거 데이터는 실시간 생존으로 처리하지 않습니다.
 

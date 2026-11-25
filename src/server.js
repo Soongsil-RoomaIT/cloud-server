@@ -33,7 +33,7 @@ async function start(overrides = {}) {
     await transport.start();
     let ticking = false, refreshing = false;
     tick = setInterval(async () => { if (ticking) return; ticking = true; try { await service.tick(); } catch { service.lastError = '상태 저장 또는 자동화 처리 오류'; } finally { ticking = false; } }, 500);
-    weatherTimer = setInterval(async () => { if (refreshing) return; refreshing = true; try { await weather.refresh(); } finally { refreshing = false; } }, 10 * 60000);
+    weatherTimer = setInterval(async () => { if (refreshing) return; refreshing = true; try { await weather.refresh(); } finally { refreshing = false; } }, 30 * 60000);
     if(config.notificationUrl && !config.demo)notificationTimer=setInterval(()=>notifications.flush().catch(()=>{service.lastError='알림 결과 저장 실패';}),1000);
     await new Promise((resolve,reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
     return { app, server, service, config, close, url: `http://${config.host}:${server.address().port}` };

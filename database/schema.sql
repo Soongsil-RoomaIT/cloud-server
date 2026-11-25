@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS sensor_readings (
   pm10 double precision CHECK (pm10 >= 0)
 );
 -- Upgrade existing installations as well as new ones.
+ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS gas_detected boolean;
 ALTER TABLE sensor_readings
   ALTER COLUMN temperature DROP NOT NULL,
   ALTER COLUMN humidity DROP NOT NULL,

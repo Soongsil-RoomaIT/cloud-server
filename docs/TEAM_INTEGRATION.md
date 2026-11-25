@@ -1,6 +1,6 @@
 # 팀 저장소 비교와 연결 계획
 
-2026-10-21 공개 저장소 코드를 읽고 비교했습니다. 다른 팀원의 저장소에는 commit/push하지 않습니다.
+팀 배포 기준은 SAD v1.4와 각 저장소의 main 브랜치입니다. 아래에 이전 연동 검토 이력도 함께 남깁니다.
 
 | 저장소 / 확인 커밋 | 현재 역할과 실제 코드 | Cloud Server 반영 |
 |---|---|---|
@@ -8,64 +8,27 @@
 | [frontend feat/monitoring](https://github.com/Soongsil-RoomaIT/frontend/tree/f5ba1e952f4c252eb8895a2809ad8151550011b6) | 사용자가 처음 지정한 모니터링 계약 | 기존 4개 GET 및 WS 메시지와도 호환 |
 | [edge_agent main](https://github.com/Soongsil-RoomaIT/edge_agent/tree/45624f8c7ea3293442269563fb8c37a12b41766f) | Python 센서·SQLite·MQTT·오프라인 제어 | roomcare/room-001 토픽, Unix 초→ISO, 문자열 status, 이벤트 변환 |
 | [hardware main](https://github.com/Soongsil-RoomaIT/hardware/tree/f362caf08f95cb43e2600a41c64667f7ae5ea8cf) | 센서·모터·서보 드라이버, 비동기 set 및 fault/position | 수락 이벤트를 완료로 오인하지 않음, 현관문 OPEN 미지원, 미확인 상태 ASSUMED |
-| [backend main](https://github.com/Soongsil-RoomaIT/backend/tree/8403084825c9b46b071bf845b2ece61068905615) | Spring Gateway, Keycloak, FCM, Redis, TLS, 관측성 | 포트 8081 사용. 인증·FCM을 중복 구현하지 않고 연결 조건 문서화 |
-| [backend minjae](https://github.com/Soongsil-RoomaIT/backend/tree/5ec1f1c78757c7f0b79661d5e50cb2c8a8e77ace) | 최신 Node Gateway, 표준 WS, Keycloak 검증, 서비스계정 알림, Redis 이력 | JWT/공간 권한 검증, WS Authorization 헤더, client credentials 알림 어댑터, /health 제공 |
-
-backend는 main과 minjae의 차이까지 비교했으며 **실제 연결 권장은 minjae**입니다. frontend main은 모니터링 단계이며 제어 기능은 feat/control-page에 있습니다.
+| [backend main](https://github.com/Soongsil-RoomaIT/backend/tree/main) | Node.js Gateway, WebSocket 중계, 내부 알림 API, VM Compose | 센서 응답·실시간 이벤트 중계, 내부 알림 요청 |
 
 ## 먼저 팀과 맞출 사항
 
 ### A 엣지 담당
 
-현재 `_handle_command()`는 commandId/expiresAt을 처리하지 않습니다. MQTT QoS1 명령 재전송은 중복 구동 위험이 있으므로 기존 프로토콜에서는 서버가 QoS0·retain=false로 한 번만 전송합니다. HTTP 중복 차단은 구현했지만 이것이 엣지의 영속 중복 차단을 대신하지는 않습니다.
-
-1. commandId를 SQLite에 기록해 재시작/재전송 후에도 한 번만 구동합니다. expiresAt이 지난 명령은 실행하지 않습니다.
-2. `set()` 호출 성공 이후 `position`, `is_moving`, `fault`를 확인하고 실제 도달했을 때 ACK를 보냅니다. 현재 remote_command는 수락으로만 기록하고, 완료를 확인하지 못하면 서버는 실패/미확인으로 종료합니다.
-3. 창문·가전의 실제 상태 스냅샷을 시작·재연결·변경 시 전송합니다. 기존 이벤트에는 창문 위치 정보가 없습니다.
-4. hardware에 존재하는 dehumidifier를 Edge의 actuator 등록·명령·자동화 규칙에 추가합니다. 현재 live edge-agent 모드에서는 해당 actions를 []로 보냅니다.
-5. 복구 이벤트는 실제 완료한 localActions를 포함해야 합니다. 기존 auto_control 이벤트도 set 수락이라 서버가 완료 이력으로 위조하지 않습니다.
-6. 현재 ConnectivityMonitor는 MQTT 브로커 연결만 봅니다. **Cloud Server만 종료되고 브로커는 살아 있는 경우를 감지하지 못합니다.** NFR-03을 충족하려면 클라우드 heartbeat/lease와 엣지 타임아웃 계약이 추가되어야 합니다.
+팀 엣지와 클라우드는 `MQTT_PROTOCOL=roomait-v1`로 연결합니다. 센서·기기·명령의 시각은 UTC ISO 형식이고, `events`의 `occurredAt`은 Unix 초입니다. 엣지의 `EXECUTED` ACK 또는 현관문 닫힘 센서 이벤트로 명령 결과를 확정합니다. [MQTT 메시지 계약](MQTT.md)
 
 ### B 하드웨어 담당
 
-프론트는 초기 미확인 상태 `UNKNOWN`을 표시합니다. 서버는 해당 연결에서 상태가 확인된 기기만 자동화 판단에 사용합니다. 창문은 기본 `COMMANDED`, 터치센서 현관문은 `SENSOR`, 버튼 서보 가전은 `ASSUMED`입니다. LED 대체 가전의 상태 보고에는 `COMMANDED`를 지정할 수 있습니다.
+프론트는 초기 미확인 상태 `UNKNOWN`을 표시합니다. LED 기기는 `COMMANDED`, MC-38 센서가 달린 현관문은 `SENSOR`를 사용합니다. 서버는 해당 연결에서 상태가 확인된 기기만 자동화 판단에 사용합니다. 현관문 10분 타이머는 엣지가 담당하고, 클라우드는 엣지가 보고한 `autoCloseAt`을 표시합니다. 클라우드는 웹에서 요청한 수동 닫기 명령을 전달할 수 있습니다.
 
-현관문의 `autoCloseAt`에는 엣지가 보고한 예약 시각만 표시합니다. 엣지의 예약 기록이 있으면 그 열림 구간의 클라우드 닫기 판단을 보류합니다. 예약이 없는 경우 클라우드의 기존 10분 정책에 따라 AUTO에서 명령을 보내고 승인 모드에서 추천을 생성합니다.
+### D 백엔드 담당
 
-### D 백엔드 담당 최신 minjae
-
-Node Gateway는 `/api` 전체를 C로 중계하며 자체적으로 `/api/push/token`, GET `/api/notifications`, POST `/internal/notifications`를 처리합니다. WS 인증 후 C에 Authorization 헤더로 JWT를 전달합니다. 이 서버가 그 헤더와 Keycloak 서명/만료/audience 및 ROOM_ALLOWED_SUBJECTS를 검증하도록 구현했습니다.
-
-현재 Gateway의 REST proxy는 **Idempotency-Key를 전달하지 않습니다**. `node-service/src/app.js`의 headers 생성 뒤에 다음을 추가해야 합니다. 실제 모드의 C는 키가 없는 수동 명령을 400으로 거부하므로, 이 수정 전에는 D 경유 원격 제어가 실패하는 것이 정상입니다. 본 작업에서 D 저장소를 수정·push하지 않았습니다.
-
-```js
-if (typeof req.headers['idempotency-key'] === 'string') {
-  headers['idempotency-key'] = req.headers['idempotency-key'];
-}
-```
-
-D 설정은 CLOUD_SERVICE_URL=http://host.docker.internal:8081, CLOUD_HEALTH_PATH=/health입니다. Docker에서 Windows 호스트에 접근할 때는 C의 HOST를 접근 가능한 내부 인터페이스로 지정해야 하며, 운영 시 인증·방화벽으로 제한해야 합니다. 개발용 무인증 연결은 D의 DEV_AUTH_BYPASS와 C의 인증 없는 개발 모드에서만 시험합니다.
-
-C의 JWT 설정 예시(실제 사용자 subject를 지정):
-
-```dotenv
-JWT_ISSUER_URI=http://localhost:8180/realms/room-care
-JWT_JWK_SET_URI=http://localhost:8180/realms/room-care/protocol/openid-connect/certs
-JWT_AUDIENCE=room-care-api
-ROOM_ALLOWED_SUBJECTS=실제-Keycloak-subject
-```
+[backend main의 Gateway](https://github.com/Soongsil-RoomaIT/backend/blob/main/node-service/src/app.js)는 `/api` 요청을 중계하고, 원격 제어 요청의 `Idempotency-Key`를 유지합니다. SAD v1.4 시연에서는 한 세대의 웹 화면을 로그인 없이 사용합니다.
 
 팀 Compose는 클라우드 서버에 `GATEWAY_INTERNAL_NOTIFICATIONS_URL=http://gateway-service:8080/internal/notifications`를 주입합니다. 클라우드 서버와 Gateway의 `INTERNAL_API_KEY`에는 같은 값을 사용합니다. 클라우드 서버는 `X-Internal-Key` 헤더와 `eventId`, `title`, `body`, `data`를 보냅니다. Gateway는 자신의 `ROOM_USER_ID`로 수신자를 정하고, 24시간 동안 같은 이벤트 ID를 중복 처리하지 않습니다.
 
 기기 동작 결과는 `device.command`, 엣지 복구는 `edge.recovered`, 기준값 추천 적용은 `recommendation.applied`로 전송합니다. Gateway는 알림을 저장하고 `notification.new`를 브라우저에 전달합니다. 클라우드 서버는 최대 3회 전송을 시도하고 Gateway의 결과 상태를 기록합니다.
 
-### D main 브랜치의 이전 Java 구현 참고
-
-현재 Gateway는 `/api/devices/**`, `/api/sensors/**`, `/api/automation/**`만 Cloud Server로 보냅니다. `/api/edge/**`, `/api/commands/**`, `/api/forecast`, `/api/decisions/**`, `/api/settings/**`, `/ws`는 추가해야 합니다. [gateway-routes.example.yml](gateway-routes.example.yml)은 라우팅 검토용 예시이며 현재 팀 서버에 적용하지 않았습니다.
-
-Java 구현의 알림 라우팅은 Node Gateway 도입 전의 구성입니다. 현재 연동 계약은 위의 내부 API를 사용합니다.
-
-Gateway는 현재 모든 요청에 JWT를 요구합니다. 브라우저 WS는 Authorization 헤더를 넣지 못하므로 단순 WS 라우트 추가만으로 연결되지 않습니다. 쿠키/첫 메시지 인증 중 팀 방식을 합의하고, Cloud Server의 테스트용 고정 Bearer 토큰과 Keycloak JWT 검증을 연결해야 합니다. 외부 공개 시 C가 사용자별 JWT를 검증하거나 인증된 내부망 Gateway만 접근하도록 배치해야 하며, 보호 없이 직접 공개하지 않습니다.
+가스 감지·해제는 `gas.detected`·`gas.cleared` 알림으로 전달합니다. 창문 열림 여부는 엣지 기기 상태 이벤트로 확인합니다.
 
 ### E 프론트엔드 담당
 

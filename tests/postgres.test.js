@@ -15,17 +15,19 @@ test('PostgreSQL schema, upsert, chronological latest, bucket averaging and stat
   assert.equal(await store.insert(b),true);assert.equal(await store.insert(a),true);assert.equal(await store.insert(a),false);
   assert.equal((await store.latest()).co2,1000);
   const h=await store.history('1h',now);assert.equal(h.points.length,1);assert.equal(h.points[0].co2,900);assert.equal(h.points[0].measuredAt,new Date(base).toISOString());
-  const partial = {...a, measuredAt:new Date(base+3000).toISOString(),temperature:null,humidity:0,co2:null,pm25:null,pm10:null};
+  const partial = {...a, measuredAt:new Date(base+3000).toISOString(),temperature:null,humidity:0,co2:null,pm25:null,pm10:null,gasDetected:true};
   const memory = new MemoryStore();
   await memory.insert(a); await memory.insert(b);
   for (const backend of [store, memory]) {
     await backend.insert(partial);
     assert.deepEqual(await backend.latest(),partial);
-    const next = {...partial, measuredAt:new Date(base+60000).toISOString()};
+    const next = {...partial, gasDetected:false, measuredAt:new Date(base+60000).toISOString()};
     await backend.insert(next);
     const history = await backend.history('1h',now);
     assert.equal(history.points[0].co2,900);
     assert.equal(history.points[0].humidity,100/3);
+    assert.equal(history.points[0].gasDetected,true);
+    assert.equal(history.points[1].gasDetected,false);
     assert.deepEqual(history.points[1],next);
   }
   await store.save({settings:{enabled:true},commands:[{id:'test',status:'PENDING'}]});

@@ -5,6 +5,7 @@ const reading = z.object({
   measuredAt: timestamp, 
   temperature: z.number().min(-80).max(100).nullable().default(null),
   humidity: z.number().min(0).max(100).nullable().default(null), 
+  gasDetected: z.boolean().nullable().default(null),
   co2: z.number().min(0).max(100000).nullable().default(null),
   pm25: z.number().min(0).max(10000).nullable().default(null), 
   pm10: z.number().min(0).max(10000).nullable().default(null),

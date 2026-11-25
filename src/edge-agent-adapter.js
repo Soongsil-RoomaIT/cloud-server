@@ -9,6 +9,7 @@ function unix(value) {
 }
 
 const doorScheduleType = 'door_auto_close_scheduled';
+const gasEventTypes = new Set(['gas_detected', 'gas_cleared']);
 
 function scheduledClose(detail, occurredAt) {
   const value = Object.hasOwn(detail, 'autoCloseAt') ? detail.autoCloseAt : detail.auto_close_at;
@@ -42,7 +43,7 @@ function handleLegacy(service, kind, payload, packet = {}) {
       if (Date.parse(measuredAt)<now-8*86400000) return;
       const r=v.reading.parse({...payload,measuredAt});
       await service.store.insert(r); service.touch(undefined,now); state.sensorIssue=null;
-      if (!service.latest || measuredAt>service.latest.measuredAt) { service.latest=r;service.event('sensor.update',r); }
+      service.updateLatest(r);
       service.evaluate(now);return;
     }
     if (kind!=='events') throw new v.ApiError(400,'알 수 없는 엣지 토픽');
@@ -67,6 +68,8 @@ function handleLegacy(service, kind, payload, packet = {}) {
         state.offlineSince = null;
       }
       state.legacy.offlineSince=null;
+    } else if (gasEventTypes.has(event.type)) {
+      service.reportGasEvent(event.type === 'gas_detected', at);
     } else if (event.type === doorScheduleType) {
       service.reportDoorSchedule(at, scheduledClose(detail, at));
     } else if (['door_opened','door_closed'].includes(event.type)) {
@@ -89,4 +92,4 @@ function handleLegacy(service, kind, payload, packet = {}) {
   });
 }
 
-module.exports = { handleLegacy, commandForEdge, doorScheduleType };
+module.exports = { handleLegacy, commandForEdge, doorScheduleType, gasEventTypes };

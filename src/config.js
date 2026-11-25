@@ -18,7 +18,7 @@ function config(env = process.env) {
     notificationUrl: env.GATEWAY_INTERNAL_NOTIFICATIONS_URL || '',
     notificationKey: env.INTERNAL_API_KEY || '',
     mqttUrl: env.MQTT_URL || '', mqttUsername: env.MQTT_USERNAME || '', mqttPassword: env.MQTT_PASSWORD || '',
-    mqttPrefix: env.MQTT_TOPIC_PREFIX || 'roomcare/room-001', mqttProtocol: env.MQTT_PROTOCOL || 'edge-agent',
+    mqttPrefix: env.MQTT_TOPIC_PREFIX || 'roomcare/room-001', mqttProtocol: env.MQTT_PROTOCOL || 'roomait-v1',
     heartbeatMs: 15000, edgeTimeoutMs: integer('EDGE_TIMEOUT_MS', 10000),
     commandTimeoutMs: integer('COMMAND_TIMEOUT_MS', 5000),
     airKey: env.AIRKOREA_SERVICE_KEY || '', airStation: env.AIRKOREA_STATION_NAME || '',

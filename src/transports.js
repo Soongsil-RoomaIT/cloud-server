@@ -1,5 +1,5 @@
 const mqtt = require('mqtt');
-const { handleLegacy, commandForEdge, doorScheduleType } = require('./edge-agent-adapter');
+const { handleLegacy, commandForEdge, doorScheduleType, gasEventTypes } = require('./edge-agent-adapter');
 
 class DemoTransport {
   constructor(service) { this.service = service; this.connected = false; this.paused = false; this.timers = new Set(); }
@@ -15,7 +15,7 @@ class DemoTransport {
     if (!this.service.config.databaseUrl && !(await this.service.store.latest())) {
       const now = Date.now();
       for (let i = 359; i >= 1; i--) {
-        await this.service.store.insert({ measuredAt: new Date(now-i*60000).toISOString(), temperature: 23+Math.sin(i/20), humidity: 58+Math.sin(i/15)*5, co2: 850+Math.sin(i/12)*100, pm25: 18+Math.sin(i/8)*3, pm10: 30+Math.sin(i/8)*5 });
+        await this.service.store.insert({ measuredAt: new Date(now-i*60000).toISOString(), temperature: 23+Math.sin(i/20), humidity: 58+Math.sin(i/15)*5, co2: null, pm25: null, pm10: null, gasDetected: false });
       }
     }
     await this.sample();
@@ -24,7 +24,7 @@ class DemoTransport {
   async sample() {
     if (!this.ready()) return;
     const n = Date.now() / 30000;
-    await this.service.ingest('sensors', { measuredAt: new Date().toISOString(), temperature: +(23+Math.sin(n)).toFixed(1), humidity: +(58+Math.sin(n/2)*5).toFixed(1), co2: Math.round(850+Math.sin(n)*100), pm25: Math.round(18+Math.sin(n)*3), pm10: Math.round(30+Math.sin(n)*5) });
+    await this.service.ingest('sensors', { measuredAt: new Date().toISOString(), temperature: +(23+Math.sin(n)).toFixed(1), humidity: +(58+Math.sin(n/2)*5).toFixed(1), gasDetected: false });
   }
   async send(c) {
     if (!this.ready()) throw new Error('Demo edge offline');
@@ -60,7 +60,7 @@ class MqttTransport {
         handleLegacy(this.service,kind,payload,packet).catch(()=>{this.rejectedMessages++;});return;
       }
       if (kind === 'events') {
-        if (payload?.type === doorScheduleType) {
+        if (payload?.type === doorScheduleType || gasEventTypes.has(payload?.type)) {
           handleLegacy(this.service, kind, payload, packet).catch(() => { this.rejectedMessages++; });
         }
         return;

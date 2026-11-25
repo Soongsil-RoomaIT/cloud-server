@@ -9,7 +9,7 @@ body{font-family:system-ui,sans-serif;background:#f3f5f7;color:#162735;margin:0}
 <p id="status" role="status" aria-live="polite">연결 중…</p>
 <section><h2>실내 환경</h2><div id="sensors" class="grid"></div><p id="measured"></p></section>
 <section><h2>기기 제어</h2><div id="devices" class="grid"></div></section>
-<section><h2>자동 제어</h2><label><input type="checkbox" id="enabled">자동화 사용</label><select id="mode" aria-label="자동화 모드"><option value="APPROVAL">승인 후 실행</option><option value="AUTO">완전 자동</option></select><button id="save">설정 저장</button><p>습도 65% 이상이면 제습기를 켜고, 55% 이하이면 끕니다. 원격 조작 후 10분간 해당 기기의 자동화를 보류합니다.</p><div id="decisions"></div></section>
+<section><h2>자동 제어</h2><label><input type="checkbox" id="enabled">자동화 사용</label><select id="mode" aria-label="자동화 모드"><option value="APPROVAL">승인 후 실행</option><option value="AUTO">완전 자동</option></select><button id="save">설정 저장</button><p>습도가 70%를 넘으면 외기 조건에 따라 환기 또는 제습을 추천해요. 습도가 60% 미만이면 제습기를 끕니다. 원격 조작 후 10분간 해당 기기의 자동화를 보류합니다.</p><div id="decisions"></div></section>
 <section><h2>상황 재현</h2><button id="humid">습도 75% 입력</button><button id="disconnect" class="secondary">엣지 연결 끊기</button><button id="recover" class="secondary">엣지 복구</button><p>센서 입력은 다음 5초 주기 측정으로 바뀝니다. 추천을 승인하려면 입력 직후 승인하세요.</p></section>
 <section><h2>실시간 이벤트</h2><div id="events" aria-live="polite"></div></section>
 </main><script>
@@ -25,8 +25,8 @@ function log(message) { $('events').textContent=(new Date().toLocaleTimeString()
 function button(label, fn) { const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{b.disabled=true;try{await fn();}catch(e){status(e.message);}finally{b.disabled=false;}};return b; }
 function sensors(r) {
   $('sensors').replaceChildren();
-  for(const [key,label,unit] of [['temperature','온도','°C'],['humidity','습도','%'],['co2','CO₂','ppm'],['pm25','초미세먼지','µg/m³'],['pm10','미세먼지','µg/m³']]){
-    const div=document.createElement('div');div.className='metric';div.textContent=label;const n=document.createElement('strong');n.textContent=r[key] == null ? '센서 없음' : r[key].toFixed(1)+' '+unit;div.append(n);$('sensors').append(div);
+  for(const [key,label,unit] of [['temperature','온도','°C'],['humidity','습도','%'],['co2','CO₂','ppm'],['pm25','초미세먼지','µg/m³'],['pm10','미세먼지','µg/m³'],['gasDetected','유해가스','']]){
+    const div=document.createElement('div');div.className='metric';div.textContent=label;const n=document.createElement('strong');n.textContent=r[key] == null ? '센서 없음' : key === 'gasDetected' ? (r[key] ? '감지' : '정상') : r[key].toFixed(1)+' '+unit;div.append(n);$('sensors').append(div);
   }$('measured').textContent='측정 시각 '+new Date(r.measuredAt).toLocaleString();
 }
 async function devices() {
@@ -47,7 +47,7 @@ function connect() {
  ws.onopen=()=>initialize().catch(e=>status(e.message));ws.onclose=()=>{status('서버 연결 끊김 · 재연결 중');setTimeout(connect,2000);};
 }
 $('save').onclick=async()=>{try{settings=await api('/settings/automation','PUT',{...settings,enabled:$('enabled').checked,mode:$('mode').value});status('자동화 설정 저장 완료');await decisions();}catch(e){status(e.message);}};
-$('humid').onclick=async()=>{try{await api('/demo/sensors','POST',{measuredAt:new Date().toISOString(),temperature:24,humidity:75,co2:900,pm25:18,pm10:30});}catch(e){status(e.message);}};
+$('humid').onclick=async()=>{try{await api('/demo/sensors','POST',{measuredAt:new Date().toISOString(),temperature:24,humidity:75,gasDetected:false});}catch(e){status(e.message);}};
 $('disconnect').onclick=async()=>{try{offlineSince=new Date().toISOString();await api('/demo/status','POST',{online:false,offlineMode:true});}catch(e){status(e.message);}};
 $('recover').onclick=async()=>{try{if(offlineSince)await api('/demo/recovery','POST',{offlineSince,recoveredAt:new Date().toISOString(),localActions:[]});await api('/demo/status','POST',{online:true,offlineMode:false});offlineSince=null;}catch(e){status(e.message);}};
 connect();

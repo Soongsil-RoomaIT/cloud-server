@@ -41,7 +41,7 @@ class MemoryStore {
   async load() { return structuredClone(this.state); }
   async insert(reading) {
     if (this.readings.has(reading.measuredAt)) return false;
-    this.readings.set(reading.measuredAt, structuredClone(reading));
+    this.readings.set(reading.measuredAt, structuredClone({ ...reading, gasDetected: reading.gasDetected ?? null }));
     const cutoff = Date.now() - 8 * 86400000;
     // Map insertion order cannot be used: recovery packets can arrive late.
     for (const [key] of this.readings) if (Date.parse(key) < cutoff) this.readings.delete(key);
@@ -60,6 +60,7 @@ class MemoryStore {
     }
     return { range, bucketSeconds: bucket, points: [...groups].sort((a,b) => a[0]-b[0]).map(([time, rows]) => ({
       measuredAt: new Date(time).toISOString(),
+      gasDetected: rows.some(r => r.gasDetected === true) ? true : rows.some(r => r.gasDetected === false) ? false : null,
       ...Object.fromEntries(metrics.map(key => [key, averageMetric(rows, key)])),
     })) };
   }
@@ -124,15 +125,15 @@ class PostgresStore {
     if (!rows.length) throw conflict();
   }
   async insert(r) {
-    const result = await this.pool.query('INSERT INTO sensor_readings VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING measured_at', [r.measuredAt, ...metrics.map(k => r[k])]);
+    const result = await this.pool.query('INSERT INTO sensor_readings (measured_at,temperature,humidity,co2,pm25,pm10,gas_detected) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING measured_at', [r.measuredAt, ...metrics.map(k => r[k]), r.gasDetected ?? null]);
     return result.rows.length > 0;
   }
-  row(r) { return { measuredAt: new Date(r.measured_at).toISOString(), ...Object.fromEntries(metrics.map(k => [k, r[k] == null ? null : Number(r[k])])) }; }
+  row(r) { return { measuredAt: new Date(r.measured_at).toISOString(), gasDetected: r.gas_detected ?? null, ...Object.fromEntries(metrics.map(k => [k, r[k] == null ? null : Number(r[k])])) }; }
   async latest() { const r = (await this.pool.query('SELECT * FROM sensor_readings ORDER BY measured_at DESC LIMIT 1')).rows[0]; return r ? this.row(r) : null; }
   async history(range, now = Date.now()) {
     const { start, end, bucket } = windowFor(range, now);
     const { rows } = await this.pool.query(`SELECT to_timestamp(floor(extract(epoch from measured_at)/$1)*$1) AS measured_at,
-      ${metrics.map(k => `avg(${k}) AS ${k}`).join(', ')} FROM sensor_readings
+      ${metrics.map(k => `avg(${k}) AS ${k}`).join(', ')}, bool_or(gas_detected) AS gas_detected FROM sensor_readings
       WHERE measured_at >= $2 AND measured_at <= $3 GROUP BY 1 ORDER BY 1`, [bucket, new Date(start).toISOString(), new Date(end).toISOString()]);
     return { range, bucketSeconds: bucket, points: rows.map(r => this.row(r)) };
   }

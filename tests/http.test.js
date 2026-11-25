@@ -15,7 +15,7 @@ async function waitFor(predicate,timeout=2000) {
 test('HTTP contract, CORS, invalid range and asynchronous device control',async t=>{
   const r=await fixture(t);const get=path=>fetch(r.url+path);
   assert.equal((await(await get('/health')).json()).mode,'demo');
-  const latest=await(await get('/api/sensors/latest')).json();assert.equal(typeof latest.co2,'number');assert.match(latest.measuredAt,/Z$/);
+  const latest=await(await get('/api/sensors/latest')).json();assert.equal(latest.co2,null);assert.equal(latest.gasDetected,false);assert.match(latest.measuredAt,/Z$/);
   assert.equal((await(await get('/api/devices')).json()).length,4);
   for(const [range,bucket,max] of [['1h',60,60],['24h',300,288],['7d',3600,168]]){
     const h=await(await get('/api/sensors/history?range='+range)).json();assert.equal(h.bucketSeconds,bucket);assert.ok(h.points.length<=max);
@@ -37,7 +37,7 @@ test('standard WS initial status, periodic heartbeat, JSON ping and sensor broad
   await waitFor(()=>list.length);assert.equal(list[0].type,'edge.status');assert.equal(list[0].payload.online,true);
   await waitFor(()=>list.some(m=>m.type==='heartbeat'));list.length=0;s.send(JSON.stringify({type:'ping'}));
   await waitFor(()=>list.some(m=>m.type==='heartbeat'));s.send('null');s.send('{bad json');
-  const sample = {measuredAt:new Date(Date.now()+1).toISOString(), temperature:25, humidity:60};
+  const sample = {measuredAt:new Date(Date.now()+1).toISOString(), temperature:25, humidity:60, gasDetected:true};
   const expected = {...sample, co2:null, pm25:null, pm10:null};
   await r.service.ingest('sensors',sample);
   const update = () => list.find(m=>m.type==='sensor.update' && m.payload.measuredAt===sample.measuredAt);
@@ -67,7 +67,7 @@ test('fresh live-like server reports no readings and no online edge rather than 
 });
 
 test('device list and realtime report confirmed sources and only the edge door schedule', async t => {
-  const runtime = await fixture(t, { transport: { start: async () => {}, close: async () => {}, ready: () => false } });
+  const runtime = await fixture(t, { mqttProtocol: 'roomait-v1', transport: { start: async () => {}, close: async () => {}, ready: () => false } });
   const devices = async () => (await fetch(runtime.url + '/api/devices')).json();
   const initial = await devices();
   for (const device of initial) {
@@ -92,7 +92,7 @@ test('device list and realtime report confirmed sources and only the edge door s
   const select = (rows, id) => rows.find(row => row.id === id);
   const reported = await devices();
   assert.equal(select(reported, 'window-1').stateSource, 'COMMANDED');
-  assert.equal(select(reported, 'dehumidifier-1').stateSource, 'ASSUMED');
+  assert.equal(select(reported, 'dehumidifier-1').stateSource, 'COMMANDED');
   assert.equal(select(reported, 'purifier-1').stateSource, 'COMMANDED');
   assert.equal(select(reported, 'door-1').stateSource, 'SENSOR');
   await runtime.service.updateSettings({ ...runtime.service.state.settings, enabled: true, mode: 'AUTO' });
@@ -129,7 +129,7 @@ test('automation round-trips both frontend shapes and validates changes before s
   const write = body => fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const initial = await read();
   assert.deepEqual(initial.rules.map(rule => rule.id), ['humidityHigh','humidityLow','temperatureHigh','pm25Bad','pm10Bad','rainProbability']);
-  assert.equal(initial.rules.find(rule => rule.id === 'temperatureHigh').enabled, false);
+  assert.equal(initial.rules.find(rule => rule.id === 'temperatureHigh').enabled, true);
 
   const body = {
     enabled: true, mode: 'AUTO', screenHint: { version: 2 },
@@ -138,7 +138,7 @@ test('automation round-trips both frontend shapes and validates changes before s
   const saved = await write(body);
   assert.equal(saved.status, 200);
   assert.deepEqual(await saved.json(), body);
-  assert.equal(runtime.service.state.settings.mode, 'APPROVAL');
+  assert.equal(runtime.service.state.settings.mode, 'AUTO');
   const flat = { humidityLow: 52, pm25On: 36 };
   assert.deepEqual(await (await write(flat)).json(), flat);
   const stored = await read();
@@ -156,7 +156,7 @@ test('automation round-trips both frontend shapes and validates changes before s
   assert.deepEqual(await read(), stored);
   const legacy = await (await fetch(runtime.url + '/api/settings/automation')).json();
   assert.equal(legacy.humidityOn, 72);
-  assert.equal(legacy.mode, 'APPROVAL');
+  assert.equal(legacy.mode, 'AUTO');
   assert.equal(await (await write({ rules: [{ id: 'temperatureHigh', threshold: 30, enabled: true }] })).status, 200);
   const oldSave = await fetch(runtime.url + '/api/settings/automation', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...legacy, humidityOn: 74 }),

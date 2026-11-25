@@ -81,7 +81,7 @@ test('approval mode proposes once, stale recommendation cannot be approved', asy
   assert.equal(s.state.decisions[0].status,'EXPIRED');await assert.rejects(s.decide(d.id,true),{status:409});
 });
 test('approved recommendation is executed through the same ACK path', async () => {
-  const {s}=await fixture();await s.updateSettings({...defaults,enabled:true});await s.ingest('sensors',reading({humidity:75}));
+  const {s}=await fixture();s.weather.data.weather.forEach(row => { row.precipitationProb = 80; });await s.updateSettings({...defaults,enabled:true});await s.ingest('sensors',reading({humidity:75}));
   const d=await s.decide(s.state.decisions[0].id,true);assert.equal(d.status,'APPROVED');
   await s.ingest('ack',{commandId:d.commandId,status:'EXECUTED',reason:'습도 제어',executedAt:new Date().toISOString()});
   assert.equal(s.state.decisions[0].status,'EXECUTED');assert.equal(s.device('dehumidifier-1').state,'ON');
@@ -91,25 +91,29 @@ test('approved recommendation is executed through the same ACK path', async () =
   });
 });
 test('auto mode respects manual hold and suppresses duplicate commands', async () => {
-  const {s,sent}=await fixture();await s.updateSettings({...defaults,enabled:true,mode:'AUTO'});
+  const {s,sent}=await fixture();s.weather.data.weather.forEach(row => { row.precipitationProb = 80; });await s.updateSettings({...defaults,enabled:true,mode:'AUTO'});
   await s.ingest('sensors',reading({humidity:75}));await s.tick();await Promise.resolve();assert.equal(sent.length,1);
   const c=s.state.commands[0];await s.ingest('ack',{commandId:c.id,status:'EXECUTED',reason:'완료',executedAt:new Date().toISOString()});
   const manual=await s.requestCommand('dehumidifier-1',{action:'OFF'});await s.ingest('ack',{commandId:manual.commandId,status:'EXECUTED',reason:'수동',executedAt:new Date().toISOString()});
   await s.ingest('sensors',reading({measuredAt:new Date(Date.now()+1).toISOString(),humidity:80}));assert.equal(s.state.commands.length,2);
 });
-test('door closes only after ten continuous minutes, even when sensor data is stale', async () => {
-  const {s}=await fixture();await s.updateSettings({...defaults,enabled:true});
-  const now=Date.now();await s.ingest('devices',{id:'door-1',state:'OPEN',updatedAt:new Date(now).toISOString()});
-  assert.equal(s.proposals(now+599999).some(p=>p.deviceId==='door-1'),false);
-  assert.equal(s.proposals(now+600000).some(p=>p.deviceId==='door-1'&&p.action==='CLOSE'),true);
-  await s.ingest('devices',{id:'door-1',state:'CLOSED',updatedAt:new Date(now+1).toISOString()});assert.equal(s.state.doorOpenedAt,null);
+test('Cloud never schedules door closing, even when the edge has not reported a schedule', async () => {
+  const {s} = await fixture();
+  const now = Date.now();
+  await s.ingest('devices', { id: 'door-1', state: 'OPEN', updatedAt: new Date(now).toISOString() });
+  assert.equal(s.proposals(now + 600000).some(p => p.deviceId === 'door-1'), false);
+  assert.equal(s.device('door-1').autoCloseAt, null);
 });
-test('unknown outdoor PM blocks automatic opening, forecast rain proposes closure', async () => {
-  const {s}=await fixture();await s.updateSettings({...defaults,enabled:true});
-  s.weather.data.weather.forEach(w=>{w.pm25=null;});await s.ingest('sensors',reading({co2:1500}));assert.equal(s.state.decisions.length,0);
-  await s.ingest('devices',{id:'window-1',state:'OPEN',updatedAt:new Date().toISOString()});
-  s.weather.data.weather.forEach(w=>{w.precipitationProb=80;});await s.tick();assert.equal(s.state.decisions.at(-1).action,'CLOSE');
+
+test('window stays closed without outdoor PM and CO2 alone does not trigger ventilation', async () => {
+  const {s} = await fixture();
+  await s.ingest('sensors', reading({co2:1500}));
+  assert.equal(s.proposals(Date.now()).some(p => p.deviceId === 'window-1'), false);
+  s.weather.airQuality = () => ({ pm25: null, pm10: 20 });
+  await s.ingest('sensors', reading({humidity:75, measuredAt:new Date(Date.now()+1).toISOString()}));
+  assert.equal(s.proposals(Date.now()).some(p => p.deviceId === 'window-1'), false);
 });
+
 test('automatic control uses saved rule switches and blocks ventilation without outdoor readings', async () => {
   const {s} = await fixture();
   await s.ingest('sensors', reading({ temperature: 31, humidity: 75, co2: null }));
@@ -130,7 +134,7 @@ test('automatic control uses saved rule switches and blocks ventilation without 
   assert.equal(proposals().some(p => p.deviceId === 'purifier-1' && p.action === 'ON'), true);
   s.weather.data.weather.forEach(row => { row.precipitationProb = 90; });
   s.weather.airQuality = () => ({ pm25: 10, pm10: 40 });
-  assert.equal(proposals().some(p => p.deviceId === 'window-1' && p.action === 'CLOSE'), true);
+  assert.equal(proposals().some(p => p.deviceId === 'window-1'), false);
 });
 
 test('storage failure rolls back state and never publishes a command', async () => {
@@ -138,12 +142,56 @@ test('storage failure rolls back state and never publishes a command', async () 
   await assert.rejects(s.requestCommand('window-1',{action:'OPEN'}));assert.equal(s.state.commands.length,0);assert.equal(sent.length,0);
 });
 module.exports={fixture,reading};
-test('fresh rain forecast can close a window even when indoor readings are missing', async()=>{
-  const {s}=await fixture();await s.updateSettings({...defaults,enabled:true});
-  await s.ingest('devices',{id:'window-1',state:'OPEN',updatedAt:new Date().toISOString()});
-  s.weather.data.weather.forEach(w=>{w.precipitationProb=90;});await s.tick();
-  assert.equal(s.state.decisions.at(-1).action,'CLOSE');assert.equal(s.latest,null);
+test('high humidity needs dehumidification when dry ventilation is blocked by rain', async () => {
+  const {s} = await fixture();
+  s.weather.data.weather.forEach(row => { row.precipitationProb = 60; });
+  assert.equal(s.proposals(Date.now()).some(p => p.deviceId === 'window-1'), false);
+  await s.ingest('sensors', reading({humidity:75}));
+  const proposals = s.proposals(Date.now());
+  assert.ok(proposals.some(p => p.deviceId === 'window-1' && p.action === 'CLOSE'));
+  assert.ok(proposals.some(p => p.deviceId === 'dehumidifier-1' && p.action === 'ON'));
 });
+
+test('gas detection blocks closing until a later confirmed clear', async () => {
+  const {s} = await fixture();
+  s.weather.airQuality = () => ({ pm25: 36, pm10: 40 });
+  const now = Date.now();
+  await s.ingest('sensors', reading({gasDetected:true, measuredAt:new Date(now).toISOString()}));
+  await s.ingest('sensors', reading({gasDetected:null, measuredAt:new Date(now+2).toISOString()}));
+  await s.run(() => s.reportGasEvent(false, new Date(now-1).toISOString()));
+  assert.ok(!s.proposals(now).some(p => p.deviceId === 'window-1'));
+  assert.ok(s.proposals(now).some(p => p.deviceId === 'purifier-1'));
+  await assert.rejects(s.requestCommand('window-1',{action:'CLOSE'}), {status:409});
+  await s.run(() => s.reportGasEvent(false, new Date(now+3).toISOString()));
+  assert.ok(s.proposals(now).some(p => p.deviceId === 'window-1' && p.action === 'CLOSE'));
+});
+
+test('30-minute hold starts at confirmed ventilation and does not suppress pollution closing', async () => {
+  const {s} = await fixture();
+  await s.updateSettings({...defaults, enabled:true});
+  const now = Date.now();
+  await s.ingest('sensors', reading({humidity:75, measuredAt:new Date(now).toISOString()}));
+  const recommendation = s.state.decisions.find(row => row.deviceId === 'window-1');
+  const approved = await s.decide(recommendation.id, true);
+  const executedAt = new Date().toISOString();
+  await s.ingest('ack', {commandId:approved.commandId, status:'EXECUTED', reason:'test', executedAt});
+  s.weather.data.weather.forEach(row => { row.precipitationProb = 70; });
+  const closes = at => s.proposals(at).some(p => p.deviceId === 'window-1' && p.action === 'CLOSE');
+  assert.equal(s.state.ventilationOpenedAt, executedAt);
+  assert.equal(closes(Date.now()), false);
+  s.weather.airQuality = () => ({ pm25: 36, pm10: 40 });
+  assert.equal(closes(Date.now()), true);
+  s.weather.airQuality = () => ({ pm25: 12, pm10: 20 });
+  const expired = Date.parse(executedAt) + 30 * 60000;
+  await s.weather.refresh(expired);
+  s.weather.data.weather.forEach(row => { row.precipitationProb = 70; });
+  // Keep the fixture's time-specific weather and indoor reading valid for the simulated future tick.
+  s.weather.current = () => s.weather.data;
+  s.latest = reading({humidity:75, measuredAt:new Date(expired).toISOString()});
+  assert.equal(closes(expired - 1), false);
+  assert.equal(closes(expired), true);
+});
+
 test('sensor retry recovers latest after insert succeeded but state save failed',async()=>{
   const {s,store}=await fixture();const save=store.save.bind(store);store.save=async()=>{throw Error('temporary DB error');};
   const r=reading();await assert.rejects(s.ingest('sensors',r));assert.equal(s.latest,null);

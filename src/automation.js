@@ -3,9 +3,9 @@ const { ApiError, settings } = require('./validation');
 const rules = {
   humidityHigh: { key: 'humidityOn', metric: 'humidity' },
   humidityLow: { key: 'humidityOff', metric: 'humidity' },
-  temperatureHigh: { key: 'temperatureHigh', metric: 'temperature', defaultEnabled: false },
+  temperatureHigh: { key: 'temperatureHigh', metric: 'temperature' },
   pm25Bad: { key: 'pm25On', metric: 'pm25' },
-  pm10Bad: { key: 'pm10Bad', metric: 'pm10', defaultEnabled: false },
+  pm10Bad: { key: 'pm10Bad', metric: 'pm10' },
   rainProbability: { key: 'rainProbability', metric: 'precipitationProb' },
 };
 const ruleKeys = Object.fromEntries(Object.entries(rules).map(([id, rule]) => [id, rule.key]));
@@ -14,7 +14,7 @@ const metadata = () => ({ fields: {}, rules: {} });
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function ruleEnabled(state, id) {
-  return state.automationMeta.rules[id]?.enabled ?? rules[id].defaultEnabled ?? true;
+  return state.automationMeta.rules[id]?.enabled ?? true;
 }
 
 function automationView(state) {
@@ -33,7 +33,10 @@ function automationUpdate(state, body) {
   const { enabled, rules: rows, ...fields } = body;
   const automationMeta = structuredClone(state.automationMeta);
   const next = { ...state.settings };
-  if (Object.hasOwn(body, 'enabled')) next.enabled = enabled;
+  if (Object.hasOwn(body, 'enabled')) {
+    next.enabled = enabled;
+    if (enabled === true) next.mode = 'AUTO';
+  }
   const seen = new Set();
 
   function setThreshold(id, threshold) {

@@ -46,10 +46,44 @@ test('team edge MQTT telemetry/status/events and command format work through a r
  await edge.publishAsync(config.mqttPrefix+'/status','offline',{qos:1,retain:true});await until(()=>!s.state.edge.online);
  assert.equal(s.device('door-1').autoCloseAt, null);
 });
+test('roomait-v1 receives MQ-2 telemetry, deduplicates gas events and queues Gateway alerts', async t => {
+ const {Aedes} = await import('aedes');
+ const broker = await Aedes.createBroker();
+ const server = net.createServer(broker.handle);
+ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+ const {s,config} = await room('roomait-v1');
+ config.notificationUrl = 'http://gateway.test/internal/notifications';
+ config.mqttUrl = 'mqtt://127.0.0.1:' + server.address().port;
+ const cloud = new MqttTransport(s,config);
+ s.transport = cloud;
+ const edge = mqtt.connect(config.mqttUrl, { reconnectPeriod: 0 });
+ t.after(async () => {
+   await edge.endAsync(true); await cloud.close(); await s.tail;
+   await new Promise(resolve => broker.close(resolve));
+   await new Promise(resolve => server.close(resolve));
+ });
+ await new Promise(resolve => edge.once('connect', resolve));
+ cloud.start();
+ await until(() => cloud.ready());
+ const publish = (kind, payload) => edge.publishAsync(config.mqttPrefix + '/' + kind, JSON.stringify(payload), { qos:1 });
+ const now = Date.now() - 1000;
+ const report = {occurredAt: (now + 1) / 1000, type:'gas_detected', detail:{}};
+ await publish('sensors', {measuredAt:new Date(now).toISOString(), temperature:24, humidity:66, gasDetected:true});
+ await until(() => s.latest?.gasDetected === true);
+ await publish('events', report);
+ await publish('events', report);
+ await publish('events', {...report, occurredAt:(now+2)/1000, type:'gas_cleared'});
+ await until(() => s.state.notifications.length === 2);
+ assert.deepEqual(s.state.notifications.map(row => [row.data.type, row.pushStatus]), [
+   ['gas.detected','PENDING'], ['gas.cleared','PENDING'],
+ ]);
+ assert.equal(s.state.gasState.detected, false);
+ assert.equal(cloud.rejectedMessages, 0);
+});
 test('legacy accepts partial readings; backlog events deduplicate without inventing execution',async()=>{
  const {s}=await room();
  await handleLegacy(s,'telemetry',{measuredAt:Date.now()/1000,temperature:23,humidity:60,pm10:null});
- assert.deepEqual(s.latest,{measuredAt:s.latest.measuredAt,temperature:23,humidity:60,co2:null,pm25:null,pm10:null});
+ assert.deepEqual(s.latest,{measuredAt:s.latest.measuredAt,temperature:23,humidity:60,co2:null,pm25:null,pm10:null,gasDetected:null});
  const event={occurredAt:Date.now()/1000,type:'auto_control',detail:{actuator:'window',on:true,reason:'co2'}};
  await handleLegacy(s,'events',event);await handleLegacy(s,'events',event);assert.equal(s.state.notifications.length,1);assert.equal(s.device('window-1').stateSource,'ASSUMED');
 });
