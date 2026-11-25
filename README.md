@@ -63,6 +63,20 @@ npm start
 
 엣지는 현관문 타이머와 가스 감지 시 창문 LED 열기를 맡습니다. 클라우드는 예약 시각을 표시하고 가스 감지·해제 이벤트를 Gateway 알림으로 전달합니다. 활성 감지 상태는 값이 `null`이 되어도 유지되며 이후의 해제 신호로 해제됩니다.
 
+### 1시간 뒤 실내 온습도 예측 실행
+
+Python에서 Ridge 계수를 JSON으로 내보냅니다. 아래 예시는 UCL p1 거실의 실내 기록으로 학습합니다.
+
+```powershell
+.\.venv\Scripts\python.exe model\forecast_baseline.py --out model\artifacts\forecast_ridge.json
+$env:FORECAST_MODEL_PATH = "model/artifacts/forecast_ridge.json"
+npm start
+```
+
+Cloud Server는 시작 시 계수를 읽고 최근 실내 온습도 2시간을 10분 평균으로 묶습니다. 각 구간에는 온도와 습도 측정값이 각각 두 건 이상 있어야 합니다. 10분 경계마다 1시간 뒤 온습도를 한 번씩 계산합니다. 기준선은 가장 최근 10분 평균입니다. 실모드에서는 PostgreSQL의 `prediction`에 저장하고 로컬 데모에서는 메모리에 저장합니다. 예측은 `GET /api/forecast`와 `forecast.update`에서 확인합니다. 대상 시각의 10분 구간에 유효한 측정값이 두 건 이상 쌓이면 항목별 평균을 `actual`에 기록합니다. API의 최신 예측에는 동일 모델 버전의 최근 24시간 중 실측과 짝이 맞은 자료로 계산한 `mae`와 `baselineMae`가 들어갑니다. 비교할 실측이 쌓이기 전에는 두 오차값이 null입니다. 예측 기반 제어는 비활성입니다.
+
+팀 Compose에서 실행할 때는 계수 JSON을 Cloud Server 컨테이너에 읽기 전용으로 마운트하고 `FORECAST_MODEL_PATH`에는 컨테이너 안의 파일 경로를 설정합니다. 모델 계수 교체는 Cloud Server를 재시작하면 반영됩니다.
+
 동작 완료는 실제 ACK 또는 현관문 센서 확인으로 판단합니다. 타임아웃은 기기가 움직이지 않았다는 보장이 아니라 **정해진 시간 안에 확인하지 못했다는 뜻**입니다. 명령을 자동 재전송하지 않습니다. 결정 상태에는 초안 외에 `FAILED`, `EXPIRED`가 있습니다.
 
 ## 팀 코드와의 관계

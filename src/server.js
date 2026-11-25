@@ -8,9 +8,11 @@ const { createApp } = require('./app');
 const { attachRealtime } = require('./realtime');
 const {createAuthenticator}=require('./auth');
 const {NotificationBridge}=require('./notification-bridge');
+const { createForecastRunner } = require('./forecast');
 
 async function start(overrides = {}) {
   const config = { ...readConfig(), ...overrides };
+  const runForecast = await createForecastRunner(config.forecastModelPath);
   const store = overrides.store || (config.databaseUrl ? new PostgresStore(config.databaseUrl) : new MemoryStore());
   const weather = new WeatherService(config);
   const service = new RoomService(store, config, weather);
@@ -21,9 +23,10 @@ async function start(overrides = {}) {
   const transport = overrides.transport || (config.demo ? new DemoTransport(service) : new MqttTransport(service, config));
   service.transport = transport;
   const notifications=new NotificationBridge(service,config);
-  let tick, weatherTimer, notificationTimer;
+  let tick, weatherTimer, notificationTimer, forecastTimer, forecasting;
   const close = async () => {
-    clearInterval(tick); clearInterval(weatherTimer); clearInterval(notificationTimer);
+    clearInterval(tick); clearInterval(weatherTimer); clearInterval(notificationTimer); clearInterval(forecastTimer);
+    await forecasting;
     await transport.close(); await realtime.close();
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     while(notifications.running)await new Promise(r=>setTimeout(r,25));
@@ -36,6 +39,16 @@ async function start(overrides = {}) {
     weatherTimer = setInterval(async () => { if (refreshing) return; refreshing = true; try { await weather.refresh(); } finally { refreshing = false; } }, 30 * 60000);
     if(config.notificationUrl && !config.demo)notificationTimer=setInterval(()=>notifications.flush().catch(()=>{service.lastError='알림 결과 저장 실패';}),1000);
     await new Promise((resolve,reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
+    if (runForecast) {
+      const refreshForecast = () => {
+        if (forecasting) return;
+        forecasting = runForecast(store).catch(error => {
+          console.error('실내 예측 저장 실패:', error.message);
+        }).finally(() => { forecasting = null; });
+      };
+      refreshForecast();
+      forecastTimer = setInterval(refreshForecast, 30000);
+    }
     return { app, server, service, config, close, url: `http://${config.host}:${server.address().port}` };
   } catch (error) { await close(); throw error; }
 }

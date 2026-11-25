@@ -1,4 +1,7 @@
 const {test}=require('node:test');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const assert=require('node:assert/strict');
 const {WebSocket}=require('ws');
 const {start}=require('../src/server');
@@ -165,6 +168,78 @@ test('automation round-trips both frontend shapes and validates changes before s
   const afterLegacy = await read();
   assert.equal(afterLegacy.rules.find(rule => rule.id === 'humidityHigh').threshold, 74);
   assert.deepEqual(afterLegacy.rules.find(rule => rule.id === 'temperatureHigh'), { id: 'temperatureHigh', metric: 'temperature', threshold: 30, enabled: true });
+});
+
+test('forecast runner publishes saved predictions and settled 24-hour errors over REST and WS', async t => {
+  const { PGlite } = require('@electric-sql/pglite');
+  const { PostgresStore } = require('../src/store');
+  const db = new PGlite();
+  const store = new PostgresStore('', {
+    query: (sql, params) => params ? db.query(sql, params) : db.exec(sql).then(results => results[0]),
+    end: () => db.close(),
+  });
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'roomait-forecast-'));
+  const modelPath = path.join(directory, 'forecast.json');
+  t.after(async () => {
+    await fs.rm(modelPath, { force: true });
+    await fs.rmdir(directory);
+  });
+  const temperatureWeights = Array(24).fill(0);
+  const humidityWeights = Array(24).fill(0);
+  temperatureWeights[0] = 1;
+  humidityWeights[1] = 1;
+  await fs.writeFile(modelPath, JSON.stringify({schemaVersion: 1, modelVersion: 'test-ridge', metrics: {
+    temperature: {intercept: 1, coefficients: temperatureWeights},
+    humidity: {intercept: 2, coefficients: humidityWeights},
+  }}));
+
+  const step = 10 * 60000;
+  const end = Math.floor(Date.now() / step) * step;
+  await store.init();
+  const prior = (offset, modelVersion, temperature, humidity, actual = null) => ({
+    generatedAt: new Date(end - 60 * 60000 - offset).toISOString(),
+    modelVersion,
+    controlEnabled: false,
+    metrics: [
+      {metric:'temperature', predicted:temperature, baseline:21, actual, mae:null, baselineMae:null},
+      {metric:'humidity', predicted:humidity, baseline:62, actual, mae:null, baselineMae:null},
+    ],
+  });
+  const due = prior(0, 'test-ridge', 24, 65);
+  const previous = prior(step, 'test-ridge', 22, 67);
+  await store.saveForecast(due);
+  await store.saveForecast(previous);
+  await store.saveForecast(prior(step * 2, 'older-ridge', 3, 5));
+  await store.saveForecast(prior(24 * 60 * 60000, 'test-ridge', 3, 5, 90));
+  for (let i = 0; i < 12; i++) {
+    for (const offset of [0, 5 * 60000]) {
+      await store.insert({
+        measuredAt: new Date(end - i * step - offset).toISOString(),
+        temperature: 22, humidity: 64, co2: null, pm25: null, pm10: null,
+      });
+    }
+  }
+  const transport = { start: async () => {}, close: async () => {}, ready: () => false };
+  const runtime = await fixture(t, { store, transport, heartbeatMs: 50, forecastModelPath: modelPath });
+  const socket = new WebSocket(runtime.url.replace('http:', 'ws:') + '/ws');
+  t.after(() => socket.terminate());
+  const list = messages(socket);
+  const forecastEvent = () => list.find(m =>
+    m.type === 'forecast.update' && m.payload.metrics.some(metric => metric.mae === 1));
+  await waitFor(forecastEvent);
+  const forecast = await (await fetch(runtime.url + '/api/forecast')).json();
+  assert.deepEqual(forecast, forecastEvent().payload);
+  assert.equal(forecast.generatedAt, new Date(end).toISOString());
+  assert.equal(forecast.targetAt, new Date(end + 60 * 60000).toISOString());
+  assert.equal(forecast.modelVersion, 'test-ridge');
+  assert.equal(forecast.controlEnabled, false);
+  assert.deepEqual(forecast.metrics, [
+    {metric: 'temperature', predicted: 23, baseline: 22, actual: null, mae: 1, baselineMae: 1},
+    {metric: 'humidity', predicted: 66, baseline: 64, actual: null, mae: 2, baselineMae: 2},
+  ]);
+  const settled = await store.forecastsBetween(end - 60 * 60000 - 3 * step, end - 60 * 60000);
+  assert.equal(settled.length, 3);
+  for (const row of settled) assert.deepEqual(row.metrics.map(metric => metric.actual), [22, 64]);
 });
 
 test('a stored one-hour prediction reaches REST and WebSocket with the same payload', async t => {

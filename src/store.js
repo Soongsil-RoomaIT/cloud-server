@@ -7,6 +7,13 @@ const conflict = () => new ApiError(409, '이미 변경된 추천입니다. 목�
 
 const ranges = { '1h': [3600, 60], '24h': [86400, 300], '7d': [604800, 3600] };
 const metrics = ['temperature', 'humidity', 'co2', 'pm25', 'pm10'];
+function forecastRow(row) {
+  const generated = new Date(row.generated_at);
+  return {
+    generatedAt: generated.toISOString(), targetAt: new Date(generated.getTime() + 3600000).toISOString(),
+    controlEnabled: row.control_enabled, modelVersion: row.model_version, message: null, metrics: row.metrics,
+  };
+}
 function windowFor(range, now) {
   const [seconds, bucket] = ranges[range];
   // Include the current partial bucket; always return at most 60/288/168 points.
@@ -23,9 +30,36 @@ function averageMetric(rows, key) {
   return count ? sum / count : null;
 }
 class MemoryStore {
-  constructor() { this.readings = new Map(); this.recommendations = new Map(); this.state = null; }
+  constructor() { this.readings = new Map(); this.recommendations = new Map(); this.state = null; this.predictions = new Map(); this.latestPredictionAt = null; }
   async init() {}
-  async latestForecast() { return null; } // The demo has no indoor prediction model.
+  async latestForecast() { return structuredClone(this.predictions.get(this.latestPredictionAt) ?? null); }
+  async forecastsBetween(start, end) {
+    return structuredClone([...this.predictions.values()].filter(row => {
+      const time = Date.parse(row.generatedAt);
+      return time > start && time <= end;
+    }));
+  }
+  async updateForecastMetrics(updates) {
+    for (const update of updates) {
+      const row = this.predictions.get(update.generatedAt);
+      if (row) row.metrics = structuredClone(update.metrics);
+    }
+  }
+  async forecastReadings(start, end) {
+    return [...this.readings.values()].filter(reading => {
+      const time = Date.parse(reading.measuredAt);
+      return time > start && time <= end;
+    });
+  }
+  async saveForecast(prediction) {
+    const at = prediction.generatedAt;
+    if (!this.predictions.has(at)) this.predictions.set(at, structuredClone(prediction));
+    if (!this.latestPredictionAt || at > this.latestPredictionAt) this.latestPredictionAt = at;
+    const cutoff = Date.parse(this.latestPredictionAt) - 26 * 3600000;
+    for (const key of this.predictions.keys()) {
+      if (Date.parse(key) < cutoff) this.predictions.delete(key);
+    }
+  }
   async listRecommendations() {
     return structuredClone([...this.recommendations.values()]).sort((a,b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   }
@@ -73,13 +107,35 @@ class PostgresStore {
     const { rows } = await this.pool.query(
       'SELECT generated_at, model_version, control_enabled, metrics FROM prediction ORDER BY generated_at DESC LIMIT 1'
     );
-    if (!rows.length) return null;
-    const row = rows[0];
-    const generated = new Date(row.generated_at);
-    return {
-      generatedAt: generated.toISOString(), targetAt: new Date(generated.getTime() + 3600000).toISOString(),
-      controlEnabled: row.control_enabled, modelVersion: row.model_version, message: null, metrics: row.metrics,
-    };
+    return rows.length ? forecastRow(rows[0]) : null;
+  }
+  async forecastsBetween(start, end) {
+    const { rows } = await this.pool.query(
+      'SELECT generated_at, model_version, control_enabled, metrics FROM prediction WHERE generated_at > $1 AND generated_at <= $2 ORDER BY generated_at',
+      [new Date(start).toISOString(), new Date(end).toISOString()]
+    );
+    return rows.map(forecastRow);
+  }
+  async updateForecastMetrics(updates) {
+    await this.pool.query(
+      'UPDATE prediction SET metrics = updated.metrics FROM jsonb_to_recordset($1::jsonb) AS updated(generated_at timestamptz, metrics jsonb) WHERE prediction.generated_at = updated.generated_at',
+      [JSON.stringify(updates.map(row => ({generated_at: row.generatedAt, metrics: row.metrics})))]
+    );
+  }
+  async forecastReadings(start, end) {
+    const { rows } = await this.pool.query(
+      'SELECT measured_at, temperature, humidity FROM sensor_readings WHERE measured_at > $1 AND measured_at <= $2 ORDER BY measured_at',
+      [new Date(start).toISOString(), new Date(end).toISOString()]
+    );
+    return rows.map(row => ({
+      measuredAt: new Date(row.measured_at).toISOString(), temperature: row.temperature, humidity: row.humidity,
+    }));
+  }
+  async saveForecast(prediction) {
+    await this.pool.query(
+      'INSERT INTO prediction (generated_at, model_version, control_enabled, metrics) VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (generated_at) DO NOTHING',
+      [prediction.generatedAt, prediction.modelVersion, prediction.controlEnabled, JSON.stringify(prediction.metrics)]
+    );
   }
   async load() {
     const { rows } = await this.pool.query(
