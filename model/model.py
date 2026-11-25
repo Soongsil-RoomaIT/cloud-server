@@ -123,7 +123,11 @@ def load_dataset(csv_path: Path) -> pd.DataFrame:
     data = data.dropna(subset=SENSOR_COLUMNS)
     return data.sort_values(row_keys, ignore_index=True)
 
-
+def split_by_home(data: pd.DataFrame):
+    train = data.loc[data["home_id"].isin(["p1", "p2", "p3", "p4", "p5"])]
+    validation = data.loc[data["home_id"] == "p6"]
+    test = data.loc[data["home_id"] == "p7"]
+    return train, validation, test
 
 
 
@@ -159,6 +163,12 @@ def main():
     data = add_ventilation_labels(data)
 
     print(data["label"].value_counts().to_string())
+    
+    train, validation, test = split_by_home(data)
+
+    for name, part in [("학습", train), ("검증", validation), ("테스트", test)]:
+        print(f"\n{name} 데이터: {len(part):,}행")
+        print(part["label"].value_counts().to_string())
 
     print(f"전체 기록: {len(data):,}행")
     print(data.head().to_string(index=False))
