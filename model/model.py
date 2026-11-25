@@ -5,9 +5,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import timm
-from pathlib import Path
 import pandas as pd
+import joblib
 
+from pathlib import Path
 from dataclasses import dataclass
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
@@ -19,21 +20,16 @@ from sklearn.tree import DecisionTreeClassifier
 # Config
 # =====================================
 class Config:
+    BASE_DIR = Path(__file__).resolve().parent
+    
     # Training
-    BATCH_SIZE = 32
     RANDOM_SEED = 42
-    WEIGHT_DECAY = 0.05
-    LR = 1e-3
     
     # Dataset
-    DATA_DIR = ""
+    DATA_PATH = BASE_DIR / "data" / "ventilation_pm.csv"
     
-    # Output
-    RESULT_DIR = ""
-    MODEL_DIR = ""
-    LOG_DIR = ""
-    GRAPH_DIR = ""
-    EVAL_DIR = ""
+    # Model
+    MODEL_PATH = BASE_DIR / "artifacts" / "ventilation_tree.joblib"
 
 CFG = Config()
 
@@ -166,8 +162,7 @@ def train_model(train: pd.DataFrame) -> DecisionTreeClassifier:
 # Main
 # =====================================
 def main():
-    csv_path = Path(__file__).resolve().parent / "data" / "ventilation_pm.csv"
-    data = load_dataset(csv_path)
+    data = load_dataset(CFG.DATA_PATH)
     data = add_pm_features(data)
     data = add_ventilation_labels(data)
 
@@ -202,6 +197,10 @@ def main():
         actual, predicted, labels=LABEL_ORDER, digits=5, zero_division=0
     ))
     print(confusion_matrix(actual, predicted, labels=LABEL_ORDER))
+    
+    CFG.MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, CFG.MODEL_PATH)
+    print(f"\n모델 저장 완료: {CFG.MODEL_PATH}")
 
 
 
