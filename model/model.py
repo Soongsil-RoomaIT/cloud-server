@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.tree import DecisionTreeClassifier
 
 # =====================================
 # Config
@@ -137,7 +139,14 @@ def split_by_home(data: pd.DataFrame):
 # Model
 # =====================================
 
+FEATURE_COLUMNS = SENSOR_COLUMNS + ["pm25_diff", "pm10_diff"]
+LABEL_ORDER = ["HOLD", "VENTILATE"]
 
+
+def train_model(train: pd.DataFrame) -> DecisionTreeClassifier:
+    model = DecisionTreeClassifier(max_depth=6, random_state=CFG.RANDOM_SEED)
+    model.fit(train[FEATURE_COLUMNS], train["label"])
+    return model
 
 
 
@@ -174,6 +183,25 @@ def main():
     print(data.head().to_string(index=False))
     print("\n센서별 결측치")
     print(data[SENSOR_COLUMNS].isna().sum().to_string())
+    
+    model = train_model(train)
+
+    actual = validation["label"]
+    predicted = model.predict(validation[FEATURE_COLUMNS])
+
+    print(classification_report(
+        actual, predicted, labels=LABEL_ORDER, digits=5, zero_division=0
+    ))
+    print(confusion_matrix(actual, predicted, labels=LABEL_ORDER))
+    
+    print("\n최종 테스트 결과 (p7)")
+    actual = test["label"]
+    predicted = model.predict(test[FEATURE_COLUMNS])
+
+    print(classification_report(
+        actual, predicted, labels=LABEL_ORDER, digits=5, zero_division=0
+    ))
+    print(confusion_matrix(actual, predicted, labels=LABEL_ORDER))
 
 
 
