@@ -156,6 +156,9 @@ def main():
     csv_path = Path(__file__).resolve().parent / "data" / "ventilation_pm.csv"
     data = load_dataset(csv_path)
     data = add_pm_features(data)
+    data = add_ventilation_labels(data)
+
+    print(data["label"].value_counts().to_string())
 
     print(f"전체 기록: {len(data):,}행")
     print(data.head().to_string(index=False))
